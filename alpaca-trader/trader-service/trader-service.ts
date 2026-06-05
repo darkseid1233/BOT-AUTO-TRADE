@@ -36,6 +36,20 @@ export class TraderService {
     return { connected: false, paper: true, message: 'disconnected — demo mode' };
   }
 
+  /**
+   * Manually resume the circuit breaker after a weekly halt.
+   * @returns status message
+   */
+  async resumeBreaker(): Promise<{ message: string }> {
+    const message = await this.bot.resumeBreaker();
+    return { message };
+  }
+
+  /** @returns circuit-breaker status snapshot. */
+  getBreakerStatus() {
+    return this.bot.getBreakerStatus();
+  }
+
   /** @returns the current risk-management settings. */
   getRisk(): RiskSettings {
     return getRiskConfig().get();
