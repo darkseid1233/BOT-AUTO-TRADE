@@ -24,13 +24,30 @@ export type Signal = {
   reasons: string[];
   /** Reasons the signal was blocked (when NEUTRAL). */
   blocked: string[];
+  /** Market regime at signal time: TRENDING_BULL | TRENDING_BEAR | RANGING | HIGH_VOL */
+  marketRegime?: string;
+  /** Choppiness Index value 0-100 */
+  chopValue?: number;
+  /** Smart Money Concepts verdict */
+  smcBull?: number;
+  smcBear?: number;
+  /** 1H trend direction */
+  trend1h?: string;
+  /** Fear & Greed index value */
+  fearGreed?: number;
   indicators: {
     rsi: number;
     ema20: number;
     ema50: number;
+    ema200: number;
     sma: number;
     atr: number;
     momentum: number;
+    adx: number;
+    macdHistogram: number;
+    stochRsi: number;
+    bollingerPct: number;
+    volRatio: number;
   };
   timestamp: number;
 };
