@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "outDir": "./dist",
+    "rootDir": "../alpaca-trader/trader-service",
+    "strict": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["../alpaca-trader/trader-service/**/*.ts"],
+  "exclude": [
+    "../alpaca-trader/trader-service/**/*.spec.ts",
+    "../alpaca-trader/trader-service/**/*.docs.mdx",
+    "../alpaca-trader/trader-service/**/*.bit-app.tsx",
+    "../alpaca-trader/trader-service/node_modules"
+  ]
+}
