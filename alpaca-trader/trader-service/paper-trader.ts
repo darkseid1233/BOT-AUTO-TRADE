@@ -10,12 +10,21 @@ const DEFAULT_BALANCE = Number(process.env.INITIAL_BALANCE ?? 100000);
 /**
  * Balance-aware paper trader with Trailing Stop + Partial TP L1/L2.
  *
- * Position lifecycle after entry:
- *   L1 hit (1R)  -> close L1% of qty, SL -> breakeven+buffer
- *   L2 hit (2R)  -> close L2% of qty, activate chandelier trailing
- *   Trailing     -> SL follows price by trailingAtrMult x ATR (never retreats)
- *   Full TP      -> close remaining qty at takeProfit
- *   SL hit       -> close all remaining qty AT stop level (caps loss)
+ * Position lifecycle:
+ *   L1 @ 1R  -> close partialTpL1ClosePct%, SL -> breakeven+buffer
+ *   L2 @ 2R  -> close partialTpL2ClosePct%, activate chandelier trailing
+ *   Trailing -> SL follows price (never retreats)
+ *   Full TP  -> close remaining qty at takeProfit
+ *   SL/Trail -> close remaining qty at stop level
+ *
+ * Risk caps:
+ *   1. slDist minimum guard   — rejects signal if SL is unrealistically close
+ *   2. Per-trade risk cap     — max loss = balance x riskPerTradePct
+ *   3. Max notional cap       — qty x price <= equity x maxNotionalPct
+ *   4. Absolute sanity cap    — qty x price <= balance x 2
+ *   5. Total-exposure cap     — sum open notionals <= equity x maxTotalExposurePct
+ *   6. Daily loss limit       — auto-pause when day loss >= dailyMaxLossPct
+ *   7. Drawdown stop          — auto-pause when equity falls maxDrawdownStopPct below peak
  */
 export class PaperTrader {
   private startingBalance: number;
@@ -65,25 +74,58 @@ export class PaperTrader {
     if (this.paused) return null;
     if (signal.side === 'NEUTRAL') return null;
     if (this.positions.has(signal.symbol)) return null;
+
     const r = this.risk.get();
     if (this.checkDailyStop(r.dailyMaxLossPct)) return null;
     if (this.checkDrawdownStop(r.maxDrawdownStopPct)) return null;
     if (signal.confidence < r.minConfidence) return null;
     if (this.positions.size >= r.maxOpenTrades) return null;
+
     const equity = this.getEquity();
     const riskAmount = equity * r.riskPerTradePct;
     const slDist = Math.abs(signal.entry - signal.stopLoss);
-    if (slDist <= 0) return null;
+
+    // Guard: SL distance must be >= 0.05% of price to prevent absurdly large qty.
+    // Root cause: if signal engine produces SL too close to entry (rounding / ATR=0)
+    // the qty explodes to tens of thousands on a $1k account.
+    const minSlDist = signal.entry * 0.0005;
+    if (slDist <= 0 || slDist < minSlDist) {
+      log.warn(
+        `[risk] ${signal.symbol} rejected — SL dist ${slDist.toFixed(6)} < min ${minSlDist.toFixed(6)}` +
+        ` (entry=${signal.entry} SL=${signal.stopLoss}). Signal SL may be miscalculated.`,
+      );
+      return null;
+    }
+
     let qty = (riskAmount * Math.max(0.1, Math.min(1, riskMultiplier))) / slDist;
     qty = applySizeMultiplier(qty, signal.symbol);
+
+    // Cap 1: max notional per position
     const maxNotional = equity * r.maxNotionalPct;
     if (qty * signal.entry > maxNotional) qty = maxNotional / signal.entry;
+
+    // Cap 2: absolute sanity — never bet more than 2x full balance as notional
+    const absoluteCap = this.balance * 2;
+    if (qty * signal.entry > absoluteCap) {
+      log.warn(
+        `[risk] ${signal.symbol} qty=${qty.toFixed(2)} notional=$${(qty * signal.entry).toFixed(2)}` +
+        ` exceeds absolute cap $${absoluteCap.toFixed(2)} — capping`,
+      );
+      qty = absoluteCap / signal.entry;
+    }
+
+    // Cap 3: total exposure across all open positions
     const remainingExposure = equity * r.maxTotalExposurePct - this.totalExposure();
-    if (remainingExposure <= 0) { log.warn(`[risk] ${signal.symbol} blocked — exposure cap`); return null; }
+    if (remainingExposure <= 0) {
+      log.warn(`[risk] ${signal.symbol} blocked — total exposure cap reached`);
+      return null;
+    }
     if (qty * signal.entry > remainingExposure) qty = remainingExposure / signal.entry;
     if (qty <= 0) return null;
+
     const cfg = getStrategyConfig();
     const atrValue = signal.indicators?.atr ?? slDist / cfg.atrSlMult;
+
     const pos: OpenPosition = {
       id: `P${this.idSeq++}`,
       symbol: signal.symbol, side: signal.side,
@@ -104,15 +146,26 @@ export class PaperTrader {
       },
     };
     this.positions.set(signal.symbol, pos);
-    this.client.placeMarketOrder(signal.symbol, signal.side === 'LONG' ? 'buy' : 'sell', Number(qty.toFixed(6)))
+
+    this.client
+      .placeMarketOrder(signal.symbol, signal.side === 'LONG' ? 'buy' : 'sell', Number(qty.toFixed(6)))
       .catch((e) => log.warn(`[trader] mirror order ${signal.symbol}: ${(e as Error).message}`));
-    log.info(`OPEN ${pos.side} ${pos.symbol} @ ${pos.entryPrice.toFixed(2)} SL=${pos.stopLoss.toFixed(2)} TP=${pos.takeProfit.toFixed(2)} qty=${qty.toFixed(4)} atr=${atrValue.toFixed(4)}`);
+
+    const maxLoss = qty * slDist;
+    const notional = qty * signal.entry;
+    log.info(
+      `OPEN ${pos.side} ${pos.symbol} @ ${pos.entryPrice.toFixed(4)} ` +
+      `SL=${pos.stopLoss.toFixed(4)} TP=${pos.takeProfit.toFixed(4)} ` +
+      `qty=${qty.toFixed(4)} notional=$${notional.toFixed(2)} risk=$${maxLoss.toFixed(2)} ` +
+      `slDist=${slDist.toFixed(6)} atr=${atrValue.toFixed(6)} conf=${pos.confidence}`,
+    );
     return pos;
   }
 
   async tick(priceFor: (symbol: string) => Promise<number>): Promise<ClosedTrade[]> {
     const cfg = getStrategyConfig();
     const closed: ClosedTrade[] = [];
+
     for (const pos of this.positions.values()) {
       let price = pos.markPrice;
       try { price = await priceFor(pos.symbol); } catch { /* keep last mark */ }
@@ -128,45 +181,54 @@ export class PaperTrader {
         const l1px = pos.entryPrice + dir * slDist * cfg.partialTpL1R;
         if (isLong ? price >= l1px : price <= l1px) {
           this.bookPartialClose(pos, l1px, pos.qtyRemaining * (cfg.partialTpL1ClosePct / 100), 'TP_PARTIAL_L1');
-          const beBuffer = slDist * cfg.breakevenBufferR;
-          pos.stopLoss = pos.entryPrice + dir * beBuffer;
+          pos.stopLoss = pos.entryPrice + dir * (slDist * cfg.breakevenBufferR);
           pos.l1Hit = true;
-          log.info(`L1 TP ${pos.symbol} @ ${l1px.toFixed(2)} SL->BE ${pos.stopLoss.toFixed(2)}`);
+          log.info(`L1 TP ${pos.symbol} @ ${l1px.toFixed(4)} SL->BE ${pos.stopLoss.toFixed(4)}`);
         }
       }
+
       // L2 Partial TP + activate trailing
       if (cfg.partialTpEnabled && pos.l1Hit && !pos.l2Hit && slDist > 0) {
         const l2px = pos.entryPrice + dir * slDist * cfg.partialTpL2R;
         if (isLong ? price >= l2px : price <= l2px) {
           this.bookPartialClose(pos, l2px, pos.qtyRemaining * (cfg.partialTpL2ClosePct / 100), 'TP_PARTIAL_L2');
           pos.trailingActive = true;
-          pos.trailingStop = isLong ? price - pos.atrValue * cfg.trailingAtrMult : price + pos.atrValue * cfg.trailingAtrMult;
+          pos.trailingStop = isLong
+            ? price - pos.atrValue * cfg.trailingAtrMult
+            : price + pos.atrValue * cfg.trailingAtrMult;
           pos.l2Hit = true;
-          log.info(`L2 TP ${pos.symbol} @ ${l2px.toFixed(2)} trailing ACTIVE @ ${pos.trailingStop.toFixed(2)}`);
+          log.info(`L2 TP ${pos.symbol} @ ${l2px.toFixed(4)} trailing ACTIVE @ ${pos.trailingStop.toFixed(4)}`);
         }
       }
-      // Advance chandelier trailing
+
+      // Advance chandelier trailing (never retreats)
       if (pos.trailingActive && pos.qtyRemaining > 0) {
-        const newTrail = isLong ? price - pos.atrValue * cfg.trailingAtrMult : price + pos.atrValue * cfg.trailingAtrMult;
+        const newTrail = isLong
+          ? price - pos.atrValue * cfg.trailingAtrMult
+          : price + pos.atrValue * cfg.trailingAtrMult;
         if (isLong && newTrail > pos.trailingStop) pos.trailingStop = newTrail;
         if (!isLong && newTrail < pos.trailingStop) pos.trailingStop = newTrail;
         if (isLong && pos.trailingStop > pos.stopLoss) pos.stopLoss = pos.trailingStop;
         if (!isLong && pos.trailingStop < pos.stopLoss) pos.stopLoss = pos.trailingStop;
       }
-      // Position fully closed by partials
+
+      // Fully closed by partials
       if (pos.qtyRemaining <= 0) { this.positions.delete(pos.symbol); continue; }
+
       // Final exit
       const hitSl = isLong ? price <= pos.stopLoss : price >= pos.stopLoss;
       const hitTp = isLong ? price >= pos.takeProfit : price <= pos.takeProfit;
       if (hitTp || hitSl) {
         const fill = hitTp ? pos.takeProfit : pos.stopLoss;
-        const reason = hitTp ? 'TP' : (pos.trailingActive ? 'TRAILING' : 'SL');
+        const reason: ClosedTrade['reason'] = hitTp ? 'TP' : (pos.trailingActive ? 'TRAILING' : 'SL');
         closed.push(this.closeAt(pos, fill, reason));
       }
     }
+
     const equity = this.getEquity();
     if (equity > this.peakEquity) this.peakEquity = equity;
     if (closed.length > 0) this.equityCurve.push({ ts: Date.now(), balance: equity });
+
     const r = this.risk.get();
     this.checkDailyStop(r.dailyMaxLossPct);
     this.checkDrawdownStop(r.maxDrawdownStopPct);
@@ -178,7 +240,8 @@ export class PaperTrader {
     this.balance += (fillPx - pos.entryPrice) * qtyToClose * dir;
     pos.qtyRemaining -= qtyToClose;
     pos.notional = pos.qtyRemaining * pos.markPrice;
-    this.client.placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
+    this.client
+      .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
       .catch((e) => log.warn(`[trader] partial mirror ${pos.symbol} ${tag}: ${(e as Error).message}`));
   }
 
@@ -219,7 +282,8 @@ export class PaperTrader {
     const realizedPnl = (price - pos.entryPrice) * qtyToClose * dir;
     this.balance += realizedPnl;
     pos.qtyRemaining = 0;
-    this.client.placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
+    this.client
+      .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
       .catch((e) => log.warn(`[trader] mirror close ${pos.symbol}: ${(e as Error).message}`));
     const trade: ClosedTrade = {
       id: pos.id, symbol: pos.symbol, side: pos.side,
@@ -241,8 +305,8 @@ export class PaperTrader {
       btcState: pos.context?.btcState, trend1h: pos.context?.trend1h,
       entryReasons: pos.context?.entryReasons ?? [], qualityFactors: pos.context?.qualityFactors,
     });
-    const emoji = realizedPnl >= 0 ? 'WIN' : 'LOSS';
-    log.info(`${emoji === 'WIN' ? '' : ''} CLOSE ${reason} ${pos.symbol} @ ${price.toFixed(2)} PnL=${realizedPnl.toFixed(2)} (L1=${pos.l1Hit} L2=${pos.l2Hit} trail=${pos.trailingActive})`);
+    const tag = realizedPnl >= 0 ? 'WIN' : 'LOSS';
+    log.info(`${tag} CLOSE ${reason} ${pos.symbol} @ ${price.toFixed(4)} PnL=$${realizedPnl.toFixed(2)} (L1=${pos.l1Hit} L2=${pos.l2Hit} trail=${pos.trailingActive})`);
     return trade;
   }
 
