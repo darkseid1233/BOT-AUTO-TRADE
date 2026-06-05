@@ -80,7 +80,7 @@ api.post('/connect', async (req, res) => {
   try {
     const { keyId, secret, paper } = req.body ?? {};
     if (!keyId || !secret) {
-      res.status(400).json({ connected: false, paper: true, message: keyId and secret required });
+      res.status(400).json({ connected: false, paper: true, message: 'keyId and secret required' });
       return;
     }
     res.json(await service.connect(String(keyId), String(secret), paper !== false));
