@@ -3,11 +3,10 @@
  *
  * Serves:
  *   /trader-service/api/*  →  backend REST API (Express)
- *   /*                     →  React dashboard static files
+ *   /*                      →  React dashboard static files
  *
  * Run:  node server.js
- * Env:  PORT (set by Railway), ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY,
- *       INITIAL_BALANCE, RISK_PER_TRADE, MAX_OPEN_TRADES, WATCHLIST
+ * Env:  PORT (set by Railway), ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY
  */
 
 import express from 'express';
@@ -18,8 +17,7 @@ import { existsSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// ── Dynamic import of compiled bot modules ───────────────────────────────────
-// These are TypeScript files compiled to JS in the build step (see Dockerfile).
+// ── Dynamic import of compiled bot modules
 const { TraderService } = await import('./dist/trader-service.js');
 const { log } = await import('./dist/logger.js');
 
@@ -27,7 +25,7 @@ const app = express();
 const port = Number(process.env.PORT) || 3000;
 const service = TraderService.from();
 
-// ── CORS for any origin (dashboard served from same domain on Railway) ────────
+// ── CORS
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -39,7 +37,7 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// ── API routes under /trader-service/api/* ────────────────────────────────────
+// ── API routes under /trader-service/api/*
 const api = express.Router();
 
 api.get('/status', (_req, res) => res.json(service.getStats()));
@@ -82,7 +80,7 @@ api.post('/connect', async (req, res) => {
   try {
     const { keyId, secret, paper } = req.body ?? {};
     if (!keyId || !secret) {
-      res.status(400).json({ connected: false, paper: true, message: 'keyId and secret required' });
+      res.status(400).json({ connected: false, paper: true, message: keyId and secret required });
       return;
     }
     res.json(await service.connect(String(keyId), String(secret), paper !== false));
@@ -98,26 +96,25 @@ api.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use('/trader-service/api', api);
 
-// ── Static React dashboard ────────────────────────────────────────────────────
+// ── Static React dashboard
 const staticDir = join(__dirname, 'public');
 if (existsSync(staticDir)) {
   app.use(express.static(staticDir));
-  // SPA fallback — all non-API routes return index.html
-  app.get('*', (_req, res) => {
+  // SPA fallback — Express 5 requires '/{*path}' instead of '*'
+  app.get('/{*path}', (_req, res) => {
     res.sendFile(join(staticDir, 'index.html'));
   });
 } else {
-  app.get('/', (_req, res) => res.send('<h1>AlpacaBot API running</h1><p>Dashboard not built. Run: npm run build:ui</p>'));
+  app.get('/', (_req, res) => res.send('<h1>AlpacaBot API running</h1><p>Dashboard not built.</p>'));
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Boot
 const server = createServer(app);
 server.listen(port, () => {
-  log.info(`🚀 AlpacaBot server on http://localhost:${port}`);
+  log.info(`🚠 AlpacaBot server on http://localhost:${port}`);
 });
 
 service.start().catch((e) => log.error(`[boot] ${e.message}`));
 
-// Graceful shutdown
 process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
 process.on('SIGINT', () => { server.close(() => process.exit(0)); });
