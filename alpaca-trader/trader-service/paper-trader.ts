@@ -100,11 +100,28 @@ export class PaperTrader {
   }
 
   /**
+   * Expose current balance so bot.ts can re-seed the circuit breaker.
+   * @returns cash balance (without unrealized PnL)
+   */
+  getBalance(): number { return this.balance; }
+
+  /**
+   * Manually set the balance baseline (e.g. after Alpaca account sync).
+   * @param balance new baseline in USD
+   */
+  setBalance(balance: number): void {
+    this.balance = balance;
+    this.startingBalance = balance;
+    log.info(`[trader] balance synced to ${balance.toFixed(2)}`);
+  }
+
+  /**
    * Open a position from a signal if ALL risk rules allow.
    * @param signal the trading signal
+   * @param riskMultiplier optional multiplier applied to position size (0-1)
    * @returns the opened position, or null if blocked by a risk rule
    */
-  async openFromSignal(signal: Signal): Promise<OpenPosition | null> {
+  async openFromSignal(signal: Signal, riskMultiplier = 1.0): Promise<OpenPosition | null> {
     if (this.paused) return null;
     if (signal.side === 'NEUTRAL') return null;
     if (this.positions.has(signal.symbol)) return null;
@@ -123,7 +140,7 @@ export class PaperTrader {
     const riskAmount = equity * r.riskPerTradePct;
     const slDist = Math.abs(signal.entry - signal.stopLoss);
     if (slDist <= 0) return null;
-    let qty = riskAmount / slDist;
+    let qty = (riskAmount * Math.max(0.1, Math.min(1, riskMultiplier))) / slDist;
 
     // Cap notional per trade.
     const maxNotional = equity * r.maxNotionalPct;
