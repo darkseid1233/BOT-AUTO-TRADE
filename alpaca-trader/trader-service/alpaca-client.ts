@@ -158,7 +158,7 @@ export class AlpacaClient {
         log.warn(`[alpaca] getCryptoBars ${symbol} failed, using synthetic: ${(e as Error).message}`);
       }
     }
-    return syntheticBars(symbol, limit);
+    return syntheticBars(symbol, limit, timeframe);
   }
 
   /**
@@ -196,29 +196,76 @@ const BASE_PRICES: Record<string, number> = {
   'MATIC/USD': 0.7,
 };
 
+/** Timeframe string → milliseconds per bar. */
+function timeframeMs(tf: string): number {
+  const m = /^(\d+)\s*(Min|Hour|Day)$/i.exec(tf.trim());
+  if (!m) return 15 * 60 * 1000;
+  const n = Number(m[1]);
+  const unit = m[2].toLowerCase();
+  if (unit === 'hour') return n * 60 * 60 * 1000;
+  if (unit === 'day') return n * 24 * 60 * 60 * 1000;
+  return n * 60 * 1000;
+}
+
+/** Mulberry32 — tiny deterministic PRNG. Same seed → same sequence. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Stable 32-bit hash of a string (for per-symbol seeding). */
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
 /**
- * Deterministic-ish synthetic OHLCV generator for demo mode.
- * @param symbol symbol used to seed the base price
+ * DETERMINISTIC synthetic OHLCV generator for demo mode.
+ *
+ * Each bar is a pure function of (symbol, bar-timestamp), so repeated calls
+ * return IDENTICAL prices for the same time window. This is critical: the scan
+ * loop (which computes the entry) and the tick loop (which marks-to-market)
+ * must see a CONTINUOUS price series — otherwise positions teleport across the
+ * stop-loss on the very next tick and book catastrophic, unrealistic losses.
+ *
+ * @param symbol symbol used to seed the base price + walk
  * @param limit number of bars
+ * @param timeframe Alpaca timeframe (controls bar spacing + drift scale)
  * @returns generated bars, oldest first
  */
 function syntheticBars(
   symbol: string,
   limit: number,
+  timeframe = '15Min',
 ): { open: number; high: number; low: number; close: number; volume: number; ts: number }[] {
-  let price = BASE_PRICES[symbol] ?? 100;
+  const barMs = timeframeMs(timeframe);
   const now = Date.now();
+  // Anchor to the current bar bucket so the latest bar is stable within a bucket.
+  const lastBucket = Math.floor(now / barMs);
+  const base = BASE_PRICES[symbol] ?? 100;
+  const symSeed = hashStr(symbol);
+  // Gentle regime trend that changes slowly over hours (deterministic per symbol).
+  const trend = Math.sin(lastBucket / 96 + symSeed % 7) * 0.0006;
+
   const out: { open: number; high: number; low: number; close: number; volume: number; ts: number }[] = [];
-  // Seed a gentle trend so signals occasionally fire.
-  const trend = (Math.sin(now / 1e9 + symbol.length) * 0.0008);
+  let price = base;
   for (let i = limit - 1; i >= 0; i--) {
-    const drift = trend + (Math.random() - 0.5) * 0.01;
+    const bucket = lastBucket - i;
+    // Seed each bar by (symbol, absolute bar bucket) → fully reproducible.
+    const rnd = mulberry32(symSeed ^ (bucket >>> 0) ^ (bucket << 13));
+    const drift = trend + (rnd() - 0.5) * 0.008;
     const open = price;
     const close = price * (1 + drift);
-    const high = Math.max(open, close) * (1 + Math.random() * 0.004);
-    const low = Math.min(open, close) * (1 - Math.random() * 0.004);
-    const volume = 500 + Math.random() * 2000;
-    out.push({ open, high, low, close, volume, ts: now - i * 15 * 60 * 1000 });
+    const high = Math.max(open, close) * (1 + rnd() * 0.003);
+    const low = Math.min(open, close) * (1 - rnd() * 0.003);
+    const volume = 500 + rnd() * 2000;
+    out.push({ open, high, low, close, volume, ts: bucket * barMs });
     price = close;
   }
   return out;

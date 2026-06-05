@@ -217,7 +217,11 @@ export class PaperTrader {
       const hitTp = pos.side === 'LONG' ? price >= pos.takeProfit : price <= pos.takeProfit;
       const hitSl = pos.side === 'LONG' ? price <= pos.stopLoss : price >= pos.stopLoss;
       if (hitTp || hitSl) {
-        closed.push(this.closeAt(pos, price, hitTp ? 'TP' : 'SL'));
+        // Fill AT the stop/target level, not at the raw mark — a price gap beyond
+        // the stop must NOT book more than the intended risk. This caps each loss
+        // to ~riskPerTradePct of equity, as the position sizing assumes.
+        const fill = hitTp ? pos.takeProfit : pos.stopLoss;
+        closed.push(this.closeAt(pos, fill, hitTp ? 'TP' : 'SL'));
       }
     }
 
