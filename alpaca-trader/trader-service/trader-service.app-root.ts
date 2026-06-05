@@ -1,0 +1,109 @@
+import express from 'express';
+import { TraderService } from './trader-service.js';
+import { log } from './logger.js';
+
+/**
+ * Boot the Express REST API for the Alpaca trading bot and start the bot loops.
+ * The platform gateway proxies the frontend to these endpoints under /api/trader.
+ * @returns the running server handle with a stop() for HMR
+ */
+export function run() {
+  const app = express();
+  const service = TraderService.from();
+  const port = Number(process.env.PORT) || 3000;
+
+  // CORS is handled by the platform gateway (credentialed origin reflection).
+  // Adding it here too would emit a conflicting `Access-Control-Allow-Origin: *`.
+  app.use(express.json());
+
+  // ── Read endpoints ──────────────────────────────────────────────────────
+  app.get('/api/status', (_req, res) => res.json(service.getStats()));
+  app.get('/api/positions', (_req, res) => res.json(service.getPositions()));
+  app.get('/api/history', (req, res) => {
+    const limit = Number(req.query.limit) || 100;
+    res.json(service.getHistory(limit));
+  });
+  app.get('/api/equity', (_req, res) => res.json(service.getEquity()));
+  app.get('/api/signals', (_req, res) => res.json(service.getSignals()));
+  app.get('/api/watchlist', (_req, res) => res.json(service.getWatchlist()));
+  app.get('/api/health/deep', (_req, res) => {
+    const h = service.getHealth();
+    res.status(h.ok ? 200 : 503).json(h);
+  });
+  app.get('/api/logs', (req, res) => {
+    const since = Number(req.query.since) || 0;
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    res.json(service.getLogs(since, limit));
+  });
+
+  // ── Control endpoints ───────────────────────────────────────────────────
+  app.post('/api/control/pause', (_req, res) => res.json(service.pause()));
+  app.post('/api/control/resume', (_req, res) => res.json(service.resume()));
+  app.post('/api/control/panic', async (_req, res) => {
+    try {
+      res.json(await service.panic());
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+  app.post('/api/control/close/:symbol', async (req, res) => {
+    try {
+      const symbol = decodeURIComponent(req.params.symbol).toUpperCase();
+      const out = await service.closeSymbol(symbol);
+      if (!out.closed) {
+        res.status(404).json({ error: 'no open position for symbol' });
+        return;
+      }
+      res.json(out);
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // ── Connection & risk endpoints ─────────────────────────────────────────
+  app.get('/api/account', async (_req, res) => {
+    try {
+      res.json(await service.getAccount());
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+  app.post('/api/connect', async (req, res) => {
+    try {
+      const { keyId, secret, paper } = req.body ?? {};
+      if (!keyId || !secret) {
+        res.status(400).json({ connected: false, paper: true, message: 'keyId and secret are required' });
+        return;
+      }
+      res.json(await service.connect(String(keyId), String(secret), paper !== false));
+    } catch (e) {
+      res.status(500).json({ connected: false, paper: true, message: (e as Error).message });
+    }
+  });
+  app.post('/api/disconnect', (_req, res) => res.json(service.disconnect()));
+  app.get('/api/risk', (_req, res) => res.json(service.getRisk()));
+  app.post('/api/risk', (req, res) => {
+    try {
+      res.json(service.updateRisk(req.body ?? {}));
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+  const server = app.listen(port, () => {
+    log.info(`🚀 trader-service ready on http://localhost:${port}`);
+  });
+
+  // Kick off the bot loops (scan + tick).
+  service.start().catch((e) => log.error(`[boot] ${(e as Error).message}`));
+
+  return {
+    port,
+    stop: async () => {
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
