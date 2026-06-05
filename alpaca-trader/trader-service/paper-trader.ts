@@ -1,5 +1,7 @@
 import { log } from './logger.js';
 import { getRiskConfig } from './risk.js';
+import { applySizeMultiplier } from './strategy-config.js';
+import { recordTrade } from './trade-journal.js';
 import type { AlpacaClient } from './alpaca-client.js';
 import type { Signal, OpenPosition, ClosedTrade, BotStats, EquityPoint } from './types.js';
 
@@ -106,16 +108,6 @@ export class PaperTrader {
   getBalance(): number { return this.balance; }
 
   /**
-   * Manually set the balance baseline (e.g. after Alpaca account sync).
-   * @param balance new baseline in USD
-   */
-  setBalance(balance: number): void {
-    this.balance = balance;
-    this.startingBalance = balance;
-    log.info(`[trader] balance synced to ${balance.toFixed(2)}`);
-  }
-
-  /**
    * Open a position from a signal if ALL risk rules allow.
    * @param signal the trading signal
    * @param riskMultiplier optional multiplier applied to position size (0-1)
@@ -141,6 +133,8 @@ export class PaperTrader {
     const slDist = Math.abs(signal.entry - signal.stopLoss);
     if (slDist <= 0) return null;
     let qty = (riskAmount * Math.max(0.1, Math.min(1, riskMultiplier))) / slDist;
+    // Per-coin size scaling (high-vol coins trade smaller) — from strategy-config.
+    qty = applySizeMultiplier(qty, signal.symbol);
 
     // Cap notional per trade.
     const maxNotional = equity * r.maxNotionalPct;
@@ -171,6 +165,14 @@ export class PaperTrader {
       pnlPercent: 0,
       openedAt: Date.now(),
       confidence: signal.confidence,
+      context: {
+        qualityScore: signal.qualityScore ?? signal.confidence,
+        marketRegime: signal.marketRegime ?? 'UNKNOWN',
+        btcState: signal.btcState,
+        trend1h: signal.trend1h,
+        entryReasons: signal.reasons ?? [],
+        qualityFactors: signal.qualityFactors,
+      },
     };
     this.positions.set(signal.symbol, pos);
 
@@ -313,9 +315,23 @@ export class PaperTrader {
       reason,
       openedAt: pos.openedAt,
       closedAt: Date.now(),
+      context: pos.context,
     };
     this.history.push(trade);
     this.positions.delete(pos.symbol);
+    // Record into the Trade Journal for analytics (by regime / quality / factor edge).
+    recordTrade({
+      id: trade.id, symbol: trade.symbol, side: trade.side,
+      entryPrice: trade.entryPrice, closePrice: trade.closePrice, qty: trade.qty,
+      realizedPnl: trade.realizedPnl, pnlPercent: trade.pnlPercent, reason: trade.reason,
+      openedAt: trade.openedAt, closedAt: trade.closedAt,
+      holdMinutes: (trade.closedAt - trade.openedAt) / 60_000, won: realizedPnl > 0,
+      qualityScore: pos.context?.qualityScore ?? pos.confidence,
+      marketRegime: pos.context?.marketRegime ?? 'UNKNOWN',
+      btcState: pos.context?.btcState, trend1h: pos.context?.trend1h,
+      entryReasons: pos.context?.entryReasons ?? [],
+      qualityFactors: pos.context?.qualityFactors,
+    });
     const emoji = realizedPnl >= 0 ? '✅' : '❌';
     log.info(`${emoji} CLOSE ${reason} ${pos.symbol} @ ${price.toFixed(2)} PnL=${realizedPnl.toFixed(2)}`);
     return trade;

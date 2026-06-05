@@ -1,6 +1,9 @@
 import { getBot, type TradingBot } from './bot.js';
 import { getRecentLogs, getLogsSince, type LogEntry } from './logger.js';
 import { getRiskConfig } from './risk.js';
+import { getJournal, computeJournalReport, type JournalEntry, type JournalReport } from './trade-journal.js';
+import { backtest, walkForward, type BacktestResult } from './backtest.js';
+import type { Bar } from './market-regime.js';
 import type {
   Signal, OpenPosition, ClosedTrade, BotStats, EquityPoint, BotHealth, AlpacaAccount,
   RiskSettings, ConnectionStatus,
@@ -90,6 +93,30 @@ export class TraderService {
   /** @returns the latest signal per watchlist symbol. */
   getSignals(): Signal[] {
     return this.bot.getLastSignals();
+  }
+
+  /** @returns recent trade-journal entries (newest first). */
+  getJournal(limit = 100): JournalEntry[] {
+    return getJournal(limit);
+  }
+
+  /** @returns the trade-journal analytics report (by regime / quality / factor edge). */
+  getJournalReport(): JournalReport {
+    return computeJournalReport();
+  }
+
+  /**
+   * Run the backtesting engine for a symbol over recent history.
+   * @param symbol Alpaca crypto symbol
+   * @param walk when true, runs walk-forward across sequential windows
+   * @returns backtest or walk-forward result
+   */
+  async runBacktest(symbol: string, walk = false): Promise<BacktestResult | ReturnType<typeof walkForward>> {
+    const [k15, k1h] = await Promise.all([
+      this.bot.client.getCryptoBars(symbol, '15Min', 1000) as Promise<Bar[]>,
+      this.bot.client.getCryptoBars(symbol, '1Hour', 500) as Promise<Bar[]>,
+    ]);
+    return walk ? walkForward(symbol, k15, k1h) : backtest(symbol, k15, k1h);
   }
 
   /** @returns the bot's watchlist symbols. */

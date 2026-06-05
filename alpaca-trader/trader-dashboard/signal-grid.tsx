@@ -73,6 +73,24 @@ export function SignalGrid({ signals }: { signals: Signal[] }) {
               )}
             </div>
 
+            {/* Signal Quality Score badge (Weighted Scoring System 0-100) */}
+            {s.qualityScore !== undefined && (
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                <span style={{
+                  fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 700,
+                  background: s.qualityScore >= 80 ? '#2ecc71' : s.qualityScore >= 70 ? '#3498db' : '#777',
+                  color: '#fff',
+                }}>QUALITY {s.qualityScore}</span>
+                {s.btcState && (
+                  <span style={{
+                    fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                    background: s.btcState === 'bullish' ? '#2ecc71' : s.btcState === 'bearish' ? '#e74c3c' : '#555',
+                    color: '#fff',
+                  }}>BTC {s.btcState.toUpperCase()}</span>
+                )}
+              </div>
+            )}
+
             <div className={styles.confBar}>
               <div className={styles.confFill} style={{ width: `${s.confidence}%` }} />
             </div>

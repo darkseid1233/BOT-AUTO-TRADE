@@ -7,12 +7,13 @@ import { PositionsTable } from './positions-table.js';
 import { HistoryTable } from './history-table.js';
 import { SignalGrid } from './signal-grid.js';
 import { LogViewer } from './log-viewer.js';
+import { AnalyticsPanel } from './analytics-panel.js';
 import { ConnectModal } from './connect-modal.js';
 import { RiskPanel } from './risk-panel.js';
 import { fmtTime, fmtMoney, fmtAgo } from './format.js';
 import styles from './trader-dashboard.module.css';
 
-type Tab = 'overview' | 'signals' | 'positions' | 'history' | 'risk' | 'logs';
+type Tab = 'overview' | 'signals' | 'positions' | 'history' | 'analytics' | 'risk' | 'logs';
 
 /**
  * AlpacaBot — the live paper-trading dashboard. Polls the trader-service for
@@ -61,6 +62,7 @@ function AlpacaBot() {
     { id: 'signals', label: `🔔 Signals${signals.filter((s) => s.side !== 'NEUTRAL').length ? ` (${signals.filter((s) => s.side !== 'NEUTRAL').length})` : ''}` },
     { id: 'positions', label: `⚡ Positions (${positions.length})` },
     { id: 'history', label: '📋 History' },
+    { id: 'analytics', label: '📈 Analytics' },
     { id: 'risk', label: '🛡️ Risk' },
     { id: 'logs', label: '📡 Logs' },
   ];
@@ -225,6 +227,16 @@ function AlpacaBot() {
               <span className={styles.cardBadge}>{history.length} total</span>
             </div>
             <HistoryTable trades={history} />
+          </div>
+        )}
+
+        {tab === 'analytics' && (
+          <div className={styles.card}>
+            <div className={styles.cardHeader}>
+              <span className={styles.cardTitle}>📈 Performance Analytics</span>
+              <span className={styles.cardBadge}>trade journal · by regime / quality / factor</span>
+            </div>
+            <AnalyticsPanel />
           </div>
         )}
 

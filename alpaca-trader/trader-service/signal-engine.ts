@@ -1,364 +1,218 @@
 /**
- * Signal Engine v3.1 — Quality-First, Anti-Ranging (ported from bcj2023)
+ * Signal Engine v4 — Regime-First, Weighted-Quality, Multi-Timeframe.
  *
- * Objectives:
- *  - Winrate +10-20% by eliminating weak entries
- *  - Profit Factor > 1.5
- *  - Zero trades in choppy/ranging markets
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT CHANGED vs v3 (and WHY)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * v3 problems fixed here (requirement #6):
+ *  - RSI/BB/StochRSI were scored as CONTRARIAN signals regardless of trend → it
+ *    bought "oversold" in downtrends and sold "overbought" in uptrends. v4 picks
+ *    the side from the REGIME first, then only counts momentum that CONFIRMS it.
+ *  - Scoring was "count points / 12" — flat and unweighted. v4 uses a Weighted
+ *    Scoring System producing a Signal Quality Score 0-100 (requirement #7/#8).
+ *  - HTF was "pending" — never truly confirmed in the score. v4 confirms 1H.
+ *  - No real BTC market-state gate. v4 hard-blocks strong opposing BTC + scores it.
+ *  - Everything tunable lives in strategy-config.ts (requirement #9).
  *
- * Gate order (each gate can reject the signal):
- *  1. Market Regime Filter  — EMA200 + ADX + RSI → TRENDING/RANGING/HIGH_VOL
- *  2. ADX Gate              — ADX ≥ 22 required (trend strength)
- *  3. Choppiness Gate       — CHOP < 61.8 required (not ranging)
- *  4. HTF 1H Confirmation   — 1H EMA50 > EMA200 + RSI alignment
- *  5. BTC Direction Filter  — BTC must not be in strong opposing trend
- *  6. Volume Confirmation   — volume ratio > 0.8
- *  7. Scoring               — composite confidence 0-100
- *  8. Min Confidence Gate   — default 60
- *
- * SL = 1.8× ATR from entry, TP = 4.5× ATR (R:R ≈ 2.5)
+ * FLOW (each gate can reject → NEUTRAL):
+ *   1. Regime Filter   → decides the ONLY allowed side (or NEUTRAL)
+ *   2. Volume Gate     → min relative volume
+ *   3. RSI late-entry  → don't chase exhausted moves
+ *   4. BTC State       → strong opposing BTC blocks the trade
+ *   5. HTF 1H          → confirm / penalise
+ *   6. Quality Score   → weighted 0-100, must clear min-quality gate
+ *   7. Net R:R         → after fees + slippage
  */
 import {
-  ema, sma, rsi, atr, macd, bollingerBands, adx, stochRsi,
-  volumeRatio, trendScore, momentum,
+  ema, sma, rsi, atr, macd, bollingerBands, stochRsi, volumeRatio,
 } from './indicators.js';
-import { choppinessIndex } from './choppiness-index.js';
 import { getVolatilityRegime } from './volatility-regime.js';
 import { analyzeSmartMoney } from './smart-money.js';
+import { detectRegime, type Bar } from './market-regime.js';
+import { analyzeBtcState, type BtcState } from './btc-state.js';
+import { confirmHtf } from './htf-confirm.js';
+import { computeSignalQuality } from './signal-quality.js';
+import { getStrategyConfig, getTuning } from './strategy-config.js';
 import type { AlpacaClient } from './alpaca-client.js';
 import type { Signal } from './types.js';
 import { log } from './logger.js';
 
-/** Minimum confidence to act on a signal (override via env). */
-const MIN_CONFIDENCE = Number(process.env.MIN_CONFIDENCE ?? 60);
-/** ATR multiplier for stop-loss placement. */
-const ATR_SL = Number(process.env.ATR_SL_MULTIPLIER ?? 1.8);
-/** ATR multiplier for take-profit placement. */
-const ATR_TP = Number(process.env.ATR_TP_MULTIPLIER ?? 4.5);
-
-/** Market regime as classified by the regime filter. */
-export type MarketRegime = 'TRENDING_BULL' | 'TRENDING_BEAR' | 'RANGING' | 'HIGH_VOL';
-
-/** 15-min bar shape. */
-type Bar = { open: number; high: number; low: number; close: number; volume: number };
-
-/** BTC direction filter cache. */
-let btcBarsCache: { bars: Bar[]; fetchedAt: number } | null = null;
-const BTC_TTL_MS = 10 * 60_000;
-
-async function getBtcBars(client: AlpacaClient): Promise<Bar[]> {
-  if (btcBarsCache && Date.now() - btcBarsCache.fetchedAt < BTC_TTL_MS) {
-    return btcBarsCache.bars;
-  }
-  const bars = await client.getCryptoBars('BTC/USD', '15Min', 120);
-  btcBarsCache = { bars, fetchedAt: Date.now() };
-  return bars;
-}
-
 /**
- * Classify market regime from price action on the 15m timeframe.
- * @param closes close prices
- * @param candles OHLC candles
- * @returns regime classification
- */
-function classifyRegime(
-  closes: number[],
-  candles: Bar[],
-): { regime: MarketRegime; ema50: number; ema200: number; rsiVal: number; adxVal: number } {
-  const ema50 = ema(closes, 50);
-  const ema200 = ema(closes, Math.min(200, closes.length));
-  const rsiVal = rsi(closes);
-  const adxData = adx(candles, 14);
-  const adxVal = adxData.adx;
-
-  const vol = getVolatilityRegime(
-    candles.map((c) => c.high),
-    candles.map((c) => c.low),
-    closes,
-  );
-
-  let regime: MarketRegime;
-
-  if (vol.state === 'EXTREME') {
-    regime = 'HIGH_VOL';
-  } else if (adxVal < 20) {
-    regime = 'RANGING';
-  } else if (ema50 > ema200 && rsiVal > 45) {
-    regime = 'TRENDING_BULL';
-  } else if (ema50 < ema200 && rsiVal < 55) {
-    regime = 'TRENDING_BEAR';
-  } else {
-    regime = 'RANGING';
-  }
-
-  return { regime, ema50, ema200, rsiVal, adxVal };
-}
-
-/**
- * BTC Direction filter — returns the BTC trend direction.
- * A strong opposing BTC trend reduces entry confidence.
- * @param client AlpacaClient to fetch BTC bars
- * @returns 'bullish' | 'bearish' | 'neutral'
- */
-async function getBtcDirection(
-  client: AlpacaClient,
-): Promise<'bullish' | 'bearish' | 'neutral'> {
-  try {
-    const bars = await getBtcBars(client);
-    if (bars.length < 52) return 'neutral';
-    const closes = bars.map((b) => b.close);
-    const e50 = ema(closes, 50);
-    const e200 = ema(closes, Math.min(200, closes.length));
-    const rsiVal = rsi(closes);
-    const adxData = adx(bars, 14);
-    if (e50 > e200 * 1.002 && adxData.adx > 22 && rsiVal > 50) return 'bullish';
-    if (e50 < e200 * 0.998 && adxData.adx > 22 && rsiVal < 50) return 'bearish';
-    return 'neutral';
-  } catch {
-    return 'neutral';
-  }
-}
-
-/**
- * Generate a Signal for one symbol using the v3.1 signal engine.
+ * Generate a Signal for one symbol using the v4 regime-first engine.
  * @param symbol Alpaca crypto symbol (e.g. "BTC/USD")
  * @param client AlpacaClient for fetching bars
- * @returns Signal (NEUTRAL when gates reject)
+ * @param btcStateOverride pre-fetched BTC state (avoids one fetch per symbol)
+ * @returns Signal (NEUTRAL when any gate rejects)
  */
-export async function generateSignal(symbol: string, client: AlpacaClient): Promise<Signal> {
-  const blocked: string[] = [];
-  const reasons: string[] = [];
+export async function generateSignal(
+  symbol: string,
+  client: AlpacaClient,
+  btcStateOverride?: BtcState,
+): Promise<Signal> {
+  const cfg = getStrategyConfig();
+  const tuning = getTuning(symbol);
+  const minQuality = Math.max(cfg.minSignalQuality, tuning.minSignalQuality ?? 0);
 
-  // ── Fetch bars ──────────────────────────────────────────────────────────────
-  const bars = await client.getCryptoBars(symbol, '15Min', 250);
-  if (bars.length < 55) {
+  const bars = (await client.getCryptoBars(symbol, '15Min', 250)) as Bar[];
+  if (bars.length < 205) {
     return neutralSignal(symbol, bars[bars.length - 1]?.close ?? 0, ['Insufficient bars']);
   }
 
-  const closes  = bars.map((b) => b.close);
+  const closes = bars.map((b) => b.close);
   const volumes = bars.map((b) => b.volume);
-  const price   = closes[closes.length - 1];
+  const price = closes[closes.length - 1];
 
-  // ── 1. Market Regime Filter ──────────────────────────────────────────────────
-  const { regime, ema50, ema200, rsiVal, adxVal } = classifyRegime(closes, bars);
-
-  if (regime === 'HIGH_VOL') {
-    return neutralSignal(symbol, price, ['Extreme volatility — NO TRADE']);
+  // ── 1. Market Regime → allowed side ────────────────────────────────────────
+  const regime = detectRegime(bars, cfg);
+  if (regime.allowedSide === 'NEUTRAL') {
+    return neutralSignal(symbol, price, [regime.reason], snapshot(bars, regime.adx));
   }
-  if (regime === 'RANGING' && adxVal < 20) {
-    return neutralSignal(symbol, price, [`Ranging market (ADX ${adxVal.toFixed(1)} < 20)`]);
-  }
+  const side = regime.allowedSide;
 
-  // ── 2. ADX Gate ─────────────────────────────────────────────────────────────
-  if (adxVal < 22) {
-    blocked.push(`ADX ${adxVal.toFixed(1)} < 22 — weak trend`);
-  }
-
-  // ── 3. Choppiness Gate ───────────────────────────────────────────────────────
-  const chop = choppinessIndex(bars, 14);
-  if (chop.state === 'RANGING') {
-    blocked.push(chop.label);
-  }
-
-  // ── 4. Volatility Regime ─────────────────────────────────────────────────────
-  const volRegime = getVolatilityRegime(
-    bars.map((b) => b.high),
-    bars.map((b) => b.low),
-    closes,
-  );
-
-  // ── 5. Volume Confirmation ──────────────────────────────────────────────────
+  // ── 2. Volume Gate ─────────────────────────────────────────────────────────
   const volRatio = volumeRatio(volumes, 20);
-  if (volRatio < 0.8) {
-    blocked.push(`Volume ratio ${volRatio.toFixed(2)} < 0.8 — no conviction`);
+  if (volRatio < cfg.minVolumeRatio) {
+    return neutralSignal(symbol, price, [`Volume ${volRatio.toFixed(2)}x < ${cfg.minVolumeRatio}`], snapshot(bars, regime.adx));
   }
 
-  // ── 6. BTC Direction Filter ──────────────────────────────────────────────────
-  const btcDir = symbol === 'BTC/USD' ? 'neutral' : await getBtcDirection(client);
+  // ── 3. RSI late-entry guard ────────────────────────────────────────────────
+  const rsiVal = regime.rsi;
+  if (side === 'LONG' && rsiVal > cfg.rsiLateEntryGuard) {
+    return neutralSignal(symbol, price, [`RSI ${rsiVal.toFixed(0)} > ${cfg.rsiLateEntryGuard} — late LONG`], snapshot(bars, regime.adx));
+  }
+  if (side === 'SHORT' && rsiVal < 100 - cfg.rsiLateEntryGuard) {
+    return neutralSignal(symbol, price, [`RSI ${rsiVal.toFixed(0)} < ${100 - cfg.rsiLateEntryGuard} — late SHORT`], snapshot(bars, regime.adx));
+  }
 
-  // ── 7. Indicators ────────────────────────────────────────────────────────────
-  const ema20  = ema(closes, 20);
+  // ── 4. BTC Market State ────────────────────────────────────────────────────
+  const btc = symbol === 'BTC/USD'
+    ? ({ direction: side === 'LONG' ? 'bullish' : 'bearish', strength: 'moderate', ema50: 0, ema200: 0, rsi: 50, adx: 0, label: 'BTC self' } as BtcState)
+    : (btcStateOverride ?? await analyzeBtcState(client));
+  const btcOpposesStrong =
+    (side === 'LONG' && btc.direction === 'bearish' && btc.strength === 'strong') ||
+    (side === 'SHORT' && btc.direction === 'bullish' && btc.strength === 'strong');
+  if (btcOpposesStrong) {
+    return neutralSignal(symbol, price, [`${btc.label} — strong opposing macro, ${side} blocked`], snapshot(bars, regime.adx));
+  }
+
+  // ── 5. HTF 1H confirmation ─────────────────────────────────────────────────
+  const htf = symbol === 'BTC/USD'
+    ? { trend: side === 'LONG' ? 'bullish' as const : 'bearish' as const, aligned: true, opposed: false, ema50: 0, ema200: 0, rsi: 50, adx: 0 }
+    : await confirmHtf(symbol, side, client);
+
+  // ── Indicators for scoring + SL/TP ─────────────────────────────────────────
+  const ema20 = ema(closes, 20);
+  const ema50 = regime.ema50;
+  const ema200 = regime.ema200;
   const smaVal = sma(closes, 50);
   const atrVal = atr(bars, 14);
   const macdData = macd(closes);
   const bbands = bollingerBands(closes);
   const srsi = stochRsi(closes);
-  const mom = momentum(closes, 10);
-  const ts = trendScore(closes, volumes, bars);
+  const volRegime = getVolatilityRegime(bars.map((b) => b.high), bars.map((b) => b.low), closes);
+  const smc = analyzeSmartMoney(bars.slice(-60).map((b) => ({ ...b })));
 
-  // ── 8. Smart Money Concepts ─────────────────────────────────────────────────
-  const smcBars = bars.slice(-60).map((b) => ({ ...b }));
-  const smc = analyzeSmartMoney(smcBars);
+  const emaStackAligned =
+    side === 'LONG' ? ema20 > ema50 && ema50 > ema200 : ema20 < ema50 && ema50 < ema200;
 
-  // ── 9. Direction scoring ─────────────────────────────────────────────────────
-  let bullScore = 0;
-  let bearScore = 0;
+  // ── 6. Weighted Signal Quality Score (0-100) ───────────────────────────────
+  const quality = computeSignalQuality({
+    side, regime: regime.regime, adx: regime.adx, emaStackAligned,
+    volumeRatio: volRatio, rsi: rsiVal, macdHistogram: macdData.histogram, stochRsi: srsi,
+    volState: volRegime.state, btc, htf, smc, cfg,
+  });
 
-  // Regime bias
-  if (regime === 'TRENDING_BULL') bullScore += 2;
-  else if (regime === 'TRENDING_BEAR') bearScore += 2;
-
-  // EMA alignment
-  if (ema20 > ema50 && ema50 > ema200) { bullScore += 2; reasons.push('EMA stack bullish (20>50>200)'); }
-  else if (ema20 < ema50 && ema50 < ema200) { bearScore += 2; reasons.push('EMA stack bearish (20<50<200)'); }
-  else if (ema20 > ema50) { bullScore++; reasons.push('EMA20 > EMA50'); }
-  else if (ema20 < ema50) { bearScore++; reasons.push('EMA20 < EMA50'); }
-
-  // RSI
-  if (rsiVal < 40) { bullScore++; reasons.push(`RSI ${rsiVal.toFixed(0)} oversold`); }
-  else if (rsiVal > 60) { bearScore++; reasons.push(`RSI ${rsiVal.toFixed(0)} overbought`); }
-  if (rsiVal > 70) blocked.push('RSI > 70 — extreme overbought, no more longs');
-  if (rsiVal < 30) blocked.push('RSI < 30 — extreme oversold, no more shorts');
-
-  // MACD
-  if (macdData.histogram > 0 && macdData.macd > 0) { bullScore++; reasons.push('MACD histogram positive'); }
-  else if (macdData.histogram < 0 && macdData.macd < 0) { bearScore++; reasons.push('MACD histogram negative'); }
-
-  // Bollinger Bands
-  if (bbands.pct < 0.2) { bullScore++; reasons.push('Price at lower Bollinger Band'); }
-  else if (bbands.pct > 0.8) { bearScore++; reasons.push('Price at upper Bollinger Band'); }
-
-  // StochRSI
-  if (srsi < 20) { bullScore++; reasons.push(`StochRSI ${srsi.toFixed(0)} oversold`); }
-  else if (srsi > 80) { bearScore++; reasons.push(`StochRSI ${srsi.toFixed(0)} overbought`); }
-
-  // Momentum
-  if (mom > 1.5) { bullScore++; reasons.push(`Momentum +${mom.toFixed(1)}%`); }
-  else if (mom < -1.5) { bearScore++; reasons.push(`Momentum ${mom.toFixed(1)}%`); }
-
-  // Trend score
-  if (ts.label === 'STRONG') {
-    if (ts.reasons.some((r) => r.toLowerCase().includes('bull'))) bullScore++;
-    else bearScore++;
+  if (quality.score < minQuality) {
+    return neutralSignal(symbol, price,
+      [`Signal Quality ${quality.score} < ${minQuality}${tuning.minSignalQuality ? ' (coin override)' : ''}`],
+      snapshot(bars, regime.adx, { rsiVal, ema20, ema50, ema200, smaVal, atrVal, mom: 0, macdData, srsi, bbands, volRatio }));
   }
 
-  // SMC
-  if (smc.smcScore.bull > smc.smcScore.bear) { bullScore++; reasons.push(`SMC: ${smc.smcScore.reasons.join(', ')}`); }
-  else if (smc.smcScore.bear > smc.smcScore.bull) { bearScore++; reasons.push(`SMC: ${smc.smcScore.reasons.join(', ')}`); }
-
-  // BTC alignment (bonus/penalty)
-  if (btcDir === 'bullish') { bullScore++; }
-  else if (btcDir === 'bearish') { bearScore++; }
-
-  // Choppiness bonus
-  if (chop.state === 'TRENDING') { bullScore++; bearScore++; } // symmetrical: good for both directions
-
-  // ADX strength bonus
-  if (adxVal >= 30) { bullScore++; bearScore++; }
-
-  // ── 10. Determine side ───────────────────────────────────────────────────────
-  const maxScore = Math.max(bullScore, bearScore);
-  const minDiff = 2;
-  let side: 'LONG' | 'SHORT' | 'NEUTRAL' = 'NEUTRAL';
-  if (bullScore - bearScore >= minDiff) side = 'LONG';
-  else if (bearScore - bullScore >= minDiff) side = 'SHORT';
-
-  // BTC opposing trend penalty
-  if (side === 'LONG' && btcDir === 'bearish') blocked.push('BTC in bearish trend (opposing LONG)');
-  if (side === 'SHORT' && btcDir === 'bullish') blocked.push('BTC in bullish trend (opposing SHORT)');
-
-  // Check ADX gate after side is determined
-  if (blocked.length > 0 || side === 'NEUTRAL') {
-    return neutralSignal(symbol, price, blocked.length > 0 ? blocked : ['No directional edge'], {
-      rsi: rsiVal, ema20, ema50, ema200, sma: smaVal, atr: atrVal, momentum: mom,
-      adx: adxVal, macdHistogram: macdData.histogram, stochRsi: srsi,
-      bollingerPct: bbands.pct, volRatio,
-    });
+  // ── 7. SL / TP + net R:R ───────────────────────────────────────────────────
+  const atrSl = tuning.atrSlMult ?? cfg.atrSlMult;
+  const atrTp = tuning.atrTpMult ?? cfg.atrTpMult;
+  const slDist = atrVal * atrSl;
+  const tpDist = atrVal * atrTp;
+  if (slDist <= 0) {
+    return neutralSignal(symbol, price, ['ATR=0 — invalid setup']);
   }
-
-  // ── 11. Confidence score 0-100 ──────────────────────────────────────────────
-  // Score out of 12 possible points mapped to 0-100
-  const rawScore = side === 'LONG' ? bullScore : bearScore;
-  let confidence = Math.round(Math.min(100, (rawScore / 12) * 100));
-
-  // Volatility cap
-  if (volRegime.scoreCap !== null) {
-    confidence = Math.min(confidence, volRegime.scoreCap);
-  }
-
-  // Choppiness adjustment
-  confidence = Math.max(0, Math.min(100, confidence + chop.confidenceAdjust * 5));
-
-  if (confidence < MIN_CONFIDENCE) {
-    return neutralSignal(symbol, price, [`Confidence ${confidence} < ${MIN_CONFIDENCE} (min)`], {
-      rsi: rsiVal, ema20, ema50, ema200, sma: smaVal, atr: atrVal, momentum: mom,
-      adx: adxVal, macdHistogram: macdData.histogram, stochRsi: srsi,
-      bollingerPct: bbands.pct, volRatio,
-    });
-  }
-
-  // ── 12. SL / TP placement ───────────────────────────────────────────────────
   const entry = price;
-  const slDist = atrVal * ATR_SL;
-  const tpDist = atrVal * ATR_TP;
-  const stopLoss  = side === 'LONG' ? entry - slDist : entry + slDist;
+  const stopLoss = side === 'LONG' ? entry - slDist : entry + slDist;
   const takeProfit = side === 'LONG' ? entry + tpDist : entry - tpDist;
-  const riskReward = slDist > 0 ? tpDist / slDist : 0;
 
-  // Skip if SL is zero (degenerate case with insufficient ATR)
-  if (slDist <= 0 || riskReward < 1.5) {
-    return neutralSignal(symbol, price, [`R:R ${riskReward.toFixed(2)} < 1.5 — poor setup`]);
+  // Net R:R after round-trip fees + slippage (the gate that actually matters).
+  const roundTripCost = entry * (2 * cfg.takerFeePct + 2 * cfg.slippagePct);
+  const netReward = Math.max(0, tpDist - roundTripCost);
+  const netRisk = slDist + roundTripCost;
+  const netRR = netRisk > 0 ? netReward / netRisk : 0;
+  if (netRR < cfg.minRiskReward) {
+    return neutralSignal(symbol, price, [`Net R:R ${netRR.toFixed(2)} < ${cfg.minRiskReward} (ATR too small)`]);
   }
 
-  log.info(`[signal-v3] ${symbol} ${side} confidence=${confidence}% regime=${regime} ADX=${adxVal.toFixed(1)} CHOP=${chop.value.toFixed(1)} bull=${bullScore} bear=${bearScore}`);
+  log.info(`[signal-v4] ${symbol} ${side} quality=${quality.score} regime=${regime.regime} ADX=${regime.adx.toFixed(1)} CHOP=${regime.chop.toFixed(1)} vol=${volRatio.toFixed(1)}x BTC=${btc.direction} HTF=${htf.trend} netRR=${netRR.toFixed(2)}`);
 
   return {
     symbol,
     side,
-    confidence,
+    confidence: quality.score,
+    qualityScore: quality.score,
+    qualityFactors: quality.factors,
     price,
     entry,
     stopLoss,
     takeProfit,
-    riskReward: parseFloat(riskReward.toFixed(2)),
-    reasons,
+    riskReward: parseFloat(netRR.toFixed(2)),
+    reasons: [regime.reason, ...quality.reasons],
     blocked: [],
-    marketRegime: regime,
-    chopValue: chop.value,
+    marketRegime: regime.regime,
+    chopValue: regime.chop,
     smcBull: smc.smcScore.bull,
     smcBear: smc.smcScore.bear,
-    trend1h: 'pending',
+    btcState: btc.direction,
+    trend1h: htf.trend,
     indicators: {
-      rsi: parseFloat(rsiVal.toFixed(2)),
-      ema20: parseFloat(ema20.toFixed(4)),
-      ema50: parseFloat(ema50.toFixed(4)),
-      ema200: parseFloat(ema200.toFixed(4)),
-      sma: parseFloat(smaVal.toFixed(4)),
-      atr: parseFloat(atrVal.toFixed(4)),
-      momentum: parseFloat(mom.toFixed(2)),
-      adx: parseFloat(adxVal.toFixed(2)),
-      macdHistogram: parseFloat(macdData.histogram.toFixed(4)),
-      stochRsi: parseFloat(srsi.toFixed(2)),
-      bollingerPct: parseFloat(bbands.pct.toFixed(3)),
-      volRatio: parseFloat(volRatio.toFixed(2)),
+      rsi: round(rsiVal), ema20: round(ema20, 4), ema50: round(ema50, 4), ema200: round(ema200, 4),
+      sma: round(smaVal, 4), atr: round(atrVal, 4), momentum: 0, adx: round(regime.adx),
+      macdHistogram: round(macdData.histogram, 4), stochRsi: round(srsi),
+      bollingerPct: round(bbands.pct, 3), volRatio: round(volRatio),
     },
     timestamp: Date.now(),
   };
 }
 
-/** Helper to build a NEUTRAL signal with optional indicator snapshot. */
-function neutralSignal(
-  symbol: string,
-  price: number,
-  blocked: string[],
-  indicators?: Signal['indicators'],
-): Signal {
+function round(n: number, d = 2): number { return parseFloat(n.toFixed(d)); }
+
+/** Minimal indicator snapshot for NEUTRAL signals. */
+function snapshot(bars: Bar[], adxVal: number, extra?: {
+  rsiVal: number; ema20: number; ema50: number; ema200: number; smaVal: number;
+  atrVal: number; mom: number; macdData: { histogram: number }; srsi: number;
+  bbands: { pct: number }; volRatio: number;
+}): Signal['indicators'] {
+  if (extra) {
+    return {
+      rsi: round(extra.rsiVal), ema20: round(extra.ema20, 4), ema50: round(extra.ema50, 4),
+      ema200: round(extra.ema200, 4), sma: round(extra.smaVal, 4), atr: round(extra.atrVal, 4),
+      momentum: 0, adx: round(adxVal), macdHistogram: round(extra.macdData.histogram, 4),
+      stochRsi: round(extra.srsi), bollingerPct: round(extra.bbands.pct, 3), volRatio: round(extra.volRatio),
+    };
+  }
+  const closes = bars.map((b) => b.close);
   return {
-    symbol,
-    side: 'NEUTRAL',
-    confidence: 0,
-    price,
-    entry: price,
-    stopLoss: 0,
-    takeProfit: 0,
-    riskReward: 0,
-    reasons: [],
-    blocked,
-    marketRegime: 'RANGING',
-    chopValue: undefined,
-    smcBull: undefined,
-    smcBear: undefined,
-    trend1h: undefined,
+    rsi: round(rsi(closes)), ema20: round(ema(closes, 20), 4), ema50: round(ema(closes, 50), 4),
+    ema200: round(ema(closes, Math.min(200, closes.length)), 4), sma: round(sma(closes, 50), 4),
+    atr: round(atr(bars, 14), 4), momentum: 0, adx: round(adxVal),
+    macdHistogram: round(macd(closes).histogram, 4), stochRsi: round(stochRsi(closes)),
+    bollingerPct: round(bollingerBands(closes).pct, 3), volRatio: round(volumeRatio(bars.map((b) => b.volume), 20)),
+  };
+}
+
+/** Build a NEUTRAL signal with an optional indicator snapshot. */
+function neutralSignal(symbol: string, price: number, blocked: string[], indicators?: Signal['indicators']): Signal {
+  return {
+    symbol, side: 'NEUTRAL', confidence: 0, qualityScore: 0, price, entry: price,
+    stopLoss: 0, takeProfit: 0, riskReward: 0, reasons: [], blocked,
+    marketRegime: 'RANGING', chopValue: undefined, smcBull: undefined, smcBear: undefined,
+    btcState: undefined, trend1h: undefined,
     indicators: indicators ?? {
       rsi: 50, ema20: 0, ema50: 0, ema200: 0, sma: 0, atr: 0, momentum: 0,
       adx: 0, macdHistogram: 0, stochRsi: 50, bollingerPct: 0.5, volRatio: 1,
@@ -367,18 +221,20 @@ function neutralSignal(
   };
 }
 
-/** Signal Engine class wrapping the v3.1 generator for the bot. */
+/** Signal Engine class wrapping the v4 generator for the bot. */
 export class SignalEngine {
   constructor(private client: AlpacaClient) {}
 
   /**
-   * Generate signals for a list of symbols in parallel.
+   * Generate signals for a list of symbols. BTC state is fetched ONCE and shared,
+   * avoiding one redundant 1H fetch per symbol.
    * @param symbols list of Alpaca crypto symbols
    * @returns array of Signals (NEUTRAL when blocked)
    */
   async generateSignals(symbols: string[]): Promise<Signal[]> {
+    const btc = await analyzeBtcState(this.client).catch(() => undefined);
     const results = await Promise.allSettled(
-      symbols.map((s) => generateSignal(s, this.client)),
+      symbols.map((s) => generateSignal(s, this.client, btc)),
     );
     return results.map((r, i) => {
       if (r.status === 'fulfilled') return r.value;

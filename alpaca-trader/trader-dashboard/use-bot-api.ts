@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
   BotStats, OpenPosition, ClosedTrade, Signal, AlpacaAccount, EquityPoint, BotHealth, LogEntry,
-  RiskSettings, ConnectionStatus,
+  RiskSettings, ConnectionStatus, JournalEntry, JournalReport,
 } from './types.js';
 
 /**
@@ -48,6 +48,16 @@ export async function connectAlpaca(payload: {
 /** Disconnect from Alpaca, returning to demo mode. */
 export async function disconnectAlpaca(): Promise<ConnectionStatus> {
   return postJson<ConnectionStatus>('/api/disconnect');
+}
+
+/** Fetch the trade-journal analytics report (by regime / quality / factor edge). */
+export async function fetchJournalReport(): Promise<JournalReport> {
+  return getJson<JournalReport>('/api/journal/report');
+}
+
+/** Fetch recent trade-journal entries. */
+export async function fetchJournal(limit = 100): Promise<JournalEntry[]> {
+  return getJson<JournalEntry[]>(`/api/journal?limit=${limit}`);
 }
 
 /** Update risk-management settings. @param patch partial settings */
