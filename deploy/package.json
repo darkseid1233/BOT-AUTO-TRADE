@@ -1,0 +1,21 @@
+{
+  "name": "alpaca-trader-railway",
+  "version": "1.0.0",
+  "description": "AlpacaBot — 24/7 auto-trader on Railway",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "build:api": "tsc --project tsconfig.build.json",
+    "build:ui": "cd ../alpaca-trader/trader-dashboard && npx vite build --outDir ../../deploy/public",
+    "build": "npm run build:api && npm run build:ui",
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "node-fetch": "^3.3.2"
+  }
+}
