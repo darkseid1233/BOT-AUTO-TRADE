@@ -1,16 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
   BotStats, OpenPosition, ClosedTrade, Signal, AlpacaAccount, EquityPoint, BotHealth, LogEntry,
-  RiskSettings, ConnectionStatus, JournalEntry, JournalReport,
+  RiskSettings, ConnectionStatus, JournalEntry, JournalReport, BreakerStatus,
 } from './types.js';
 
-/**
- * Trader-service base path.
- *
- * The dashboard's Vite dev server proxies `/trader-service` to the platform
- * gateway (see vite.config.js), so the browser always talks same-origin — no
- * CORS, and it works identically on a PC and in the Bit cloud workspace.
- */
 const BASE = '/trader-service';
 
 async function getJson<T>(path: string): Promise<T> {
@@ -19,12 +12,6 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/**
- * POST helper for control endpoints.
- * @param path API path under the trader service
- * @param body optional JSON body to send
- * @returns parsed JSON response
- */
 export async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -36,36 +23,28 @@ export async function postJson<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** Connect to Alpaca with API keys. @param payload keyId, secret, paper flag */
-export async function connectAlpaca(payload: {
-  keyId: string;
-  secret: string;
-  paper: boolean;
-}): Promise<ConnectionStatus> {
+export async function connectAlpaca(payload: { keyId: string; secret: string; paper: boolean }): Promise<ConnectionStatus> {
   return postJson<ConnectionStatus>('/api/connect', payload);
 }
-
-/** Disconnect from Alpaca, returning to demo mode. */
 export async function disconnectAlpaca(): Promise<ConnectionStatus> {
   return postJson<ConnectionStatus>('/api/disconnect');
 }
-
-/** Fetch the trade-journal analytics report (by regime / quality / factor edge). */
 export async function fetchJournalReport(): Promise<JournalReport> {
   return getJson<JournalReport>('/api/journal/report');
 }
-
-/** Fetch recent trade-journal entries. */
 export async function fetchJournal(limit = 100): Promise<JournalEntry[]> {
   return getJson<JournalEntry[]>(`/api/journal?limit=${limit}`);
 }
-
-/** Update risk-management settings. @param patch partial settings */
 export async function updateRisk(patch: Partial<RiskSettings>): Promise<RiskSettings> {
   return postJson<RiskSettings>('/api/risk', patch);
 }
+export async function fetchBacktestCompare(symbol: string, walk = true): Promise<unknown> {
+  return getJson<unknown>(`/api/backtest/compare/${encodeURIComponent(symbol)}?walk=${walk}`);
+}
+export async function fetchBacktest(symbol: string, walkForward = false): Promise<unknown> {
+  return getJson<unknown>(`/api/backtest/${encodeURIComponent(symbol)}?walk=${walkForward}`);
+}
 
-/** Aggregate data returned by the polling hook. */
 export type BotData = {
   stats: BotStats | null;
   positions: OpenPosition[];
@@ -76,17 +55,13 @@ export type BotData = {
   health: BotHealth | null;
   logs: LogEntry[];
   risk: RiskSettings | null;
+  breaker: BreakerStatus | null;
   loading: boolean;
   error: string | null;
   lastUpdated: number;
   refresh: () => void;
 };
 
-/**
- * Poll the trader-service REST API on an interval and expose live bot data.
- * @param pollMs polling interval in milliseconds (default 5000)
- * @returns the latest bot data plus a manual refresh function
- */
 export function useBotApi(pollMs = 5000): BotData {
   const [stats, setStats] = useState<BotStats | null>(null);
   const [positions, setPositions] = useState<OpenPosition[]>([]);
@@ -97,6 +72,7 @@ export function useBotApi(pollMs = 5000): BotData {
   const [health, setHealth] = useState<BotHealth | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [risk, setRisk] = useState<RiskSettings | null>(null);
+  const [breaker, setBreaker] = useState<BreakerStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState(0);
@@ -104,7 +80,7 @@ export function useBotApi(pollMs = 5000): BotData {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [s, p, h, sig, acc, eq, hl, rk] = await Promise.allSettled([
+      const [s, p, h, sig, acc, eq, hl, rk, br] = await Promise.allSettled([
         getJson<BotStats>('/api/status'),
         getJson<OpenPosition[]>('/api/positions'),
         getJson<ClosedTrade[]>('/api/history?limit=100'),
@@ -113,6 +89,7 @@ export function useBotApi(pollMs = 5000): BotData {
         getJson<EquityPoint[]>('/api/equity'),
         getJson<BotHealth>('/api/health/deep'),
         getJson<RiskSettings>('/api/risk'),
+        getJson<BreakerStatus>('/api/breaker'),
       ]);
       if (s.status === 'fulfilled') setStats(s.value);
       if (p.status === 'fulfilled') setPositions(Array.isArray(p.value) ? p.value : []);
@@ -122,7 +99,7 @@ export function useBotApi(pollMs = 5000): BotData {
       if (eq.status === 'fulfilled') setEquity(Array.isArray(eq.value) ? eq.value : []);
       if (hl.status === 'fulfilled') setHealth(hl.value);
       if (rk.status === 'fulfilled') setRisk(rk.value);
-
+      if (br.status === 'fulfilled') setBreaker(br.value);
       const anyOk = [s, p, h, sig, acc, eq, hl].some((r) => r.status === 'fulfilled');
       setError(anyOk ? null : 'Cannot reach the trading bot service.');
       setLastUpdated(Date.now());
@@ -143,9 +120,7 @@ export function useBotApi(pollMs = 5000): BotData {
         const newestFirst = [...data.entries].sort((a, b) => b.ts - a.ts);
         setLogs((prev) => [...newestFirst, ...prev].slice(0, 300));
       }
-    } catch {
-      /* ignore log fetch errors */
-    }
+    } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
@@ -153,14 +128,11 @@ export function useBotApi(pollMs = 5000): BotData {
     fetchLogs();
     const t1 = setInterval(fetchAll, pollMs);
     const t2 = setInterval(fetchLogs, 4000);
-    return () => {
-      clearInterval(t1);
-      clearInterval(t2);
-    };
+    return () => { clearInterval(t1); clearInterval(t2); };
   }, [fetchAll, fetchLogs, pollMs]);
 
   return {
-    stats, positions, history, signals, account, equity, health, logs, risk,
+    stats, positions, history, signals, account, equity, health, logs, risk, breaker,
     loading, error, lastUpdated, refresh: fetchAll,
   };
 }

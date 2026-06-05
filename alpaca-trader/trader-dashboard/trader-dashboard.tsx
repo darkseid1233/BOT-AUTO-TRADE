@@ -15,14 +15,9 @@ import styles from './trader-dashboard.module.css';
 
 type Tab = 'overview' | 'signals' | 'positions' | 'history' | 'analytics' | 'risk' | 'logs';
 
-/**
- * AlpacaBot — the live paper-trading dashboard. Polls the trader-service for
- * stats, positions, signals, equity, account, and logs, and exposes control
- * actions (pause / resume / panic / close).
- */
 function AlpacaBot() {
   const {
-    stats, positions, history, signals, account, equity, health, logs, risk,
+    stats, positions, history, signals, account, equity, health, logs, risk, breaker,
     loading, error, lastUpdated, refresh,
   } = useBotApi(5000);
   const [tab, setTab] = useState<Tab>('overview');
@@ -31,14 +26,8 @@ function AlpacaBot() {
 
   const control = async (path: string) => {
     setBusy(true);
-    try {
-      await postJson(path);
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
+    try { await postJson(path); await refresh(); } finally { setBusy(false); }
   };
-
   const closeSymbol = (symbol: string) => control(`/api/control/close/${encodeURIComponent(symbol)}`);
 
   if (loading) {
@@ -58,21 +47,24 @@ function AlpacaBot() {
   const scanOk = health ? health.lastScanAgoMs >= 0 && health.lastScanAgoMs < health.scanIntervalSec * 3000 : false;
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'overview', label: '📊 Overview' },
-    { id: 'signals', label: `🔔 Signals${signals.filter((s) => s.side !== 'NEUTRAL').length ? ` (${signals.filter((s) => s.side !== 'NEUTRAL').length})` : ''}` },
+    { id: 'overview',  label: '📊 Overview' },
+    { id: 'signals',   label: `🔔 Signals${signals.filter((s) => s.side !== 'NEUTRAL').length ? ` (${signals.filter((s) => s.side !== 'NEUTRAL').length})` : ''}` },
     { id: 'positions', label: `⚡ Positions (${positions.length})` },
-    { id: 'history', label: '📋 History' },
+    { id: 'history',   label: '📋 History' },
     { id: 'analytics', label: '📈 Analytics' },
-    { id: 'risk', label: '🛡️ Risk' },
-    { id: 'logs', label: '📡 Logs' },
+    { id: 'risk',      label: '🛡️ Risk' },
+    { id: 'logs',      label: '📡 Logs' },
   ];
+
+  /* Is the circuit breaker active in any way? */
+  const breakerActive = breaker?.activeCooldown || breaker?.weeklyHalted || breaker?.dailyHalted;
 
   return (
     <div className={styles.root}>
       {/* Header */}
       <header className={styles.header}>
         <div className={styles.brand}>
-          <span className={styles.logoMark}>🦙</span>
+          <span className={styles.logoMark}>🦩</span>
           <div>
             <div className={styles.logo}>AlpacaBot</div>
             <div className={styles.tagline}>Automated Alpaca paper trader</div>
@@ -91,10 +83,31 @@ function AlpacaBot() {
             {connected ? '🔑 Account' : '🔑 Connect Alpaca'}
           </button>
           <button className={styles.btn} onClick={refresh} disabled={busy}>Refresh</button>
+
+          {/* RESUME trading (manual pause/resume) */}
           {stats?.paused
-            ? <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy} onClick={() => control('/api/control/resume')}>Resume</button>
-            : <button className={`${styles.btn} ${styles.btnWarn}`} disabled={busy} onClick={() => control('/api/control/pause')}>Pause</button>}
-          <button className={`${styles.btn} ${styles.btnDanger}`} disabled={busy} onClick={() => control('/api/control/panic')}>Panic close</button>
+            ? <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy} onClick={() => control('/api/control/resume')}>▶ Resume trading</button>
+            : <button className={`${styles.btn} ${styles.btnWarn}`} disabled={busy} onClick={() => control('/api/control/pause')}>⏸ Pause</button>}
+
+          {/* RESUME button — clears streak/daily/weekly cooldown */}
+          {breakerActive && (
+            <button
+              className={`${styles.btn} ${styles.btnResume}`}
+              disabled={busy}
+              onClick={() => control('/api/breaker/resume')}
+              title={
+                breaker?.activeCooldown
+                  ? `Streak cooldown — ${breaker.cooldownMinutesLeft}m left after ${breaker.cooldownTriggeredBy} consecutive losses. Click to force-clear.`
+                  : breaker?.weeklyHalted
+                  ? 'Weekly drawdown halt active. Click to clear manually and reset the weekly baseline.'
+                  : 'Daily halt active. Click to clear manually.'
+              }
+            >
+              ⚡ RESUME{breaker?.activeCooldown ? ` (${breaker.cooldownMinutesLeft}m)` : ''}
+            </button>
+          )}
+
+          <button className={`${styles.btn} ${styles.btnDanger}`} disabled={busy} onClick={() => control('/api/control/panic')}>🚨 Panic close</button>
         </div>
       </header>
 
@@ -112,6 +125,25 @@ function AlpacaBot() {
           <span className={`${styles.dot} ${stats?.paused ? styles.dotRed : styles.dotGreen}`} />
           {stats?.paused ? 'Paused' : 'Active'}
         </div>
+        {/* Breaker status chips */}
+        {breaker?.activeCooldown && (
+          <div className={`${styles.chip} ${styles.chipWarn}`}>
+            <span className={`${styles.dot} ${styles.dotYellow}`} />
+            ⚠️ Streak cooldown {breaker.cooldownMinutesLeft}m · {breaker.cooldownTriggeredBy} losses
+          </div>
+        )}
+        {breaker?.weeklyHalted && (
+          <div className={`${styles.chip} ${styles.chipDanger}`}>
+            <span className={`${styles.dot} ${styles.dotRed}`} />
+            🔴 Weekly halt — manual resume required
+          </div>
+        )}
+        {breaker?.dailyHalted && (
+          <div className={`${styles.chip} ${styles.chipDanger}`}>
+            <span className={`${styles.dot} ${styles.dotRed}`} />
+            🔴 Daily halt — resets midnight UTC
+          </div>
+        )}
         <div className={styles.chip}>
           <span className={`${styles.dot} ${positions.length ? styles.dotGreen : styles.dotGray}`} />
           {positions.length} open
@@ -142,11 +174,10 @@ function AlpacaBot() {
 
         {tab === 'overview' && (
           <>
-            {/* Account panel */}
             {account && (
               <div className={styles.card}>
                 <div className={styles.cardHeader}>
-                  <span className={styles.cardTitle}>🦙 Alpaca Account</span>
+                  <span className={styles.cardTitle}>🦩 Alpaca Account</span>
                   <span className={styles.cardBadge}>{account.paperTrading ? 'PAPER' : 'LIVE'} · {account.accountNumber}</span>
                 </div>
                 <div className={styles.cardBody}>
@@ -160,7 +191,31 @@ function AlpacaBot() {
               </div>
             )}
 
-            {/* KPIs */}
+            {/* Circuit Breaker status card (shown only when active) */}
+            {breakerActive && (
+              <div className={styles.card} style={{ borderColor: 'rgba(245,208,32,0.4)', background: 'rgba(245,208,32,0.04)' }}>
+                <div className={styles.cardHeader}>
+                  <span className={styles.cardTitle}>⚡ Circuit Breaker Active</span>
+                  <button
+                    className={`${styles.btn} ${styles.btnResume}`}
+                    style={{ fontSize: '12px', padding: '6px 14px' }}
+                    disabled={busy}
+                    onClick={() => control('/api/breaker/resume')}
+                  >
+                    RESUME — Clear Cooldown
+                  </button>
+                </div>
+                <div className={styles.cardBody} style={{ padding: '14px 18px', fontSize: '13px', lineHeight: '1.8' }}>
+                  {breaker?.activeCooldown && <div>⏰ <strong>Streak cooldown:</strong> {breaker.cooldownMinutesLeft}m left after {breaker.cooldownTriggeredBy} consecutive losses. Bot will not open new trades until cooldown expires OR you click RESUME above.</div>}
+                  {breaker?.weeklyHalted && <div>🔴 <strong>Weekly halt:</strong> Drawdown exceeded the weekly limit. Requires manual resume.</div>}
+                  {breaker?.dailyHalted && <div>🔴 <strong>Daily halt:</strong> Drawdown exceeded the daily limit. Resets automatically at midnight UTC.</div>}
+                  {(breaker?.dailyDrawdownPct ?? 0) > 0 && <div>📉 Daily drawdown: <strong style={{ color: 'var(--loss)' }}>{breaker!.dailyDrawdownPct.toFixed(2)}%</strong></div>}
+                  {(breaker?.weeklyDrawdownPct ?? 0) > 0 && <div>📉 Weekly drawdown: <strong style={{ color: 'var(--loss)' }}>{breaker!.weeklyDrawdownPct.toFixed(2)}%</strong></div>}
+                  {(breaker?.reducedRiskTradesLeft ?? 0) > 0 && <div>⚠️ Reduced-risk mode: next <strong>{breaker!.reducedRiskTradesLeft}</strong> trades at 75% size.</div>}
+                </div>
+              </div>
+            )}
+
             {stats && (
               <div className={styles.statsGrid}>
                 <StatCard label="Equity" value={`$${equityVal.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} tone={equityVal >= stats.startingBalance ? 'pos' : 'neg'} sub={`Balance $${stats.balance.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
@@ -178,7 +233,6 @@ function AlpacaBot() {
               </div>
             )}
 
-            {/* Equity curve */}
             <div className={styles.card}>
               <div className={styles.cardHeader}>
                 <span className={styles.cardTitle}>📈 Equity Curve</span>
@@ -189,7 +243,6 @@ function AlpacaBot() {
               </div>
             </div>
 
-            {/* Open positions */}
             <div className={styles.card}>
               <div className={styles.cardHeader}>
                 <span className={styles.cardTitle}>⚡ Open Positions</span>
@@ -236,7 +289,9 @@ function AlpacaBot() {
               <span className={styles.cardTitle}>📈 Performance Analytics</span>
               <span className={styles.cardBadge}>trade journal · by regime / quality / factor</span>
             </div>
-            <AnalyticsPanel />
+            <div style={{ padding: '16px 18px' }}>
+              <AnalyticsPanel />
+            </div>
           </div>
         )}
 
@@ -272,9 +327,6 @@ function AlpacaBot() {
   );
 }
 
-/**
- * Router entry for the dashboard app.
- */
 export function TraderDashboard() {
   return (
     <Routes>
