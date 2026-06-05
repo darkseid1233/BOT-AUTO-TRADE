@@ -1,15 +1,11 @@
 {
   "name": "alpaca-trader-railway",
   "version": "1.0.0",
-  "description": "AlpacaBot — 24/7 auto-trader on Railway",
+  "description": "AlpacaBot -- 24/7 auto-trader on Railway",
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "build:api": "tsc --project tsconfig.build.json",
-    "build:ui": "cd ../alpaca-trader/trader-dashboard && npx vite build --outDir ../../deploy/public",
-    "build": "npm run build:api && npm run build:ui",
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server.js"
   },
   "engines": {
     "node": ">=20"
@@ -17,5 +13,16 @@
   "dependencies": {
     "express": "^5.2.1",
     "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.0",
+    "recharts": "^2.15.3",
+    "typescript": "^5.7.3",
+    "vite": "^5.4.14"
   }
 }
