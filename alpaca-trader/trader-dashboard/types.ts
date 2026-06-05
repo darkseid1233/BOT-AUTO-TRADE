@@ -34,9 +34,15 @@ export type OpenPosition = {
   entryPrice: number;
   markPrice: number;
   qty: number;
+  qtyRemaining: number;
   notional: number;
   stopLoss: number;
+  initialStopLoss: number;
   takeProfit: number;
+  trailingActive: boolean;
+  trailingStop: number;
+  l1Hit: boolean;
+  l2Hit: boolean;
   unrealizedPnl: number;
   pnlPercent: number;
   openedAt: number;
@@ -52,7 +58,7 @@ export type ClosedTrade = {
   qty: number;
   realizedPnl: number;
   pnlPercent: number;
-  reason: 'TP' | 'SL' | 'MANUAL' | 'PANIC';
+  reason: 'TP' | 'SL' | 'TRAILING' | 'TP_PARTIAL_L1' | 'TP_PARTIAL_L2' | 'MANUAL' | 'PANIC';
   openedAt: number;
   closedAt: number;
 };
@@ -61,11 +67,8 @@ export type Signal = {
   symbol: string;
   side: Side;
   confidence: number;
-  /** Signal Quality Score 0-100 (Weighted Scoring System). */
   qualityScore?: number;
-  /** Per-factor 0..1 contributions. */
   qualityFactors?: Record<string, number>;
-  /** BTC macro state direction at signal time. */
   btcState?: string;
   price: number;
   entry: number;
@@ -74,45 +77,18 @@ export type Signal = {
   riskReward: number;
   reasons: string[];
   blocked: string[];
-  /** Market regime: TRENDING_BULL | TRENDING_BEAR | RANGING | HIGH_VOL */
   marketRegime?: string;
-  /** Choppiness index 0-100 */
-  chopValue?: number;
-  /** SMC bull score */
-  smcBull?: number;
-  /** SMC bear score */
-  smcBear?: number;
-  /** 1H trend direction */
   trend1h?: string;
-  /** Fear & Greed index */
-  fearGreed?: number;
-  indicators: {
-    rsi: number;
-    ema20: number;
-    ema50: number;
-    ema200?: number;
-    sma: number;
-    atr: number;
-    momentum: number;
-    adx?: number;
-    macdHistogram?: number;
-    stochRsi?: number;
-    bollingerPct?: number;
-    volRatio?: number;
+  chopIndex?: number;
+  adx?: number;
+  atr?: number;
+  indicators?: {
+    ema20: number; ema50: number; ema200: number;
+    rsi: number; sma: number; atr: number; momentum: number;
+    adx?: number; macdHistogram?: number; stochRsi?: number;
+    bollingerPct?: number; volRatio?: number;
   };
   timestamp: number;
-};
-
-/** Circuit Breaker state snapshot. */
-export type BreakerStatus = {
-  dailyHalted: boolean;
-  weeklyHalted: boolean;
-  activeCooldown: boolean;
-  cooldownMinutesLeft: number;
-  dailyDrawdownPct: number;
-  weeklyDrawdownPct: number;
-  consecutiveLosses: number;
-  reducedRiskTradesLeft: number;
 };
 
 export type AlpacaAccount = {
@@ -127,10 +103,7 @@ export type AlpacaAccount = {
   paperTrading: boolean;
 };
 
-export type EquityPoint = {
-  ts: number;
-  balance: number;
-};
+export type EquityPoint = { ts: number; balance: number; };
 
 export type BotHealth = {
   ok: boolean;
@@ -143,63 +116,48 @@ export type BotHealth = {
   warnings: string[];
 };
 
-export type LogEntry = {
-  ts: number;
-  level: 'info' | 'warn' | 'error' | 'debug';
-  msg: string;
-};
+export type LogEntry = { ts: number; level: 'info' | 'warn' | 'error' | 'debug'; msg: string; };
 
-/** Risk-management settings, mirrored from the service. */
 export type RiskSettings = {
   riskPerTradePct: number;
   maxOpenTrades: number;
   maxNotionalPct: number;
   maxTotalExposurePct: number;
+  minConfidence: number;
   dailyMaxLossPct: number;
   maxDrawdownStopPct: number;
-  minConfidence: number;
 };
 
-/** Alpaca connection result. */
-export type ConnectionStatus = {
-  connected: boolean;
-  paper: boolean;
-  message: string;
-};
+export type ConnectionStatus = { connected: boolean; paper: boolean; message: string; };
 
-/** A trade-journal entry (mirror of the service shape). */
 export type JournalEntry = {
-  id: string;
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  entryPrice: number;
-  closePrice: number;
-  realizedPnl: number;
-  pnlPercent: number;
-  reason: string;
-  closedAt: number;
-  holdMinutes: number;
-  won: boolean;
-  qualityScore: number;
-  marketRegime: string;
-  btcState?: string;
-  trend1h?: string;
+  id: string; symbol: string; side: 'LONG' | 'SHORT';
+  entryPrice: number; closePrice: number; qty: number;
+  realizedPnl: number; pnlPercent: number; reason: string;
+  openedAt: number; closedAt: number; holdMinutes: number; won: boolean;
+  qualityScore: number; marketRegime: string;
+  btcState?: string; trend1h?: string;
+  entryReasons: string[];
+  qualityFactors?: Record<string, number>;
 };
 
-/** Per-factor edge from the journal analytics. */
-export type FactorCorrelation = {
-  factor: string;
-  avgWin: number;
-  avgLoss: number;
-  edge: number;
-};
-
-/** Journal analytics report (by regime / quality bucket / factor edge). */
 export type JournalReport = {
   totalTrades: number;
   byRegime: Record<string, { trades: number; wins: number; winRate: number; avgPnlPct: number }>;
   byQualityBucket: Record<string, { trades: number; wins: number; winRate: number; avgPnlPct: number }>;
-  factorEdge: FactorCorrelation[];
+  factorEdge: { factor: string; avgWin: number; avgLoss: number; edge: number }[];
   bestRegime: string | null;
   worstRegime: string | null;
+};
+
+export type BreakerStatus = {
+  dailyHalted: boolean;
+  weeklyHalted: boolean;
+  activeCooldown: boolean;
+  cooldownMinutesLeft: number;
+  cooldownTriggeredBy: number;
+  consecutiveLosses: number;
+  dailyDrawdownPct: number;
+  weeklyDrawdownPct: number;
+  reducedRiskTradesLeft: number;
 };

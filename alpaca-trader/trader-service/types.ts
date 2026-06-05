@@ -3,62 +3,69 @@
  * These shapes are returned by the REST API and consumed by the dashboard.
  */
 
-/** A tradable symbol the bot watches (crypto or US equity). */
 export type WatchSymbol = string;
-
-/** Trade direction. */
 export type Side = 'LONG' | 'SHORT' | 'NEUTRAL';
 
-/** A generated trading signal for one symbol. */
 export type Signal = {
   symbol: string;
   side: Side;
-  /** Composite confidence score 0-100 (alias of qualityScore). */
   confidence: number;
-  /** Signal Quality Score 0-100 from the Weighted Scoring System. */
   qualityScore?: number;
-  /** Per-factor 0..1 contributions for the trade journal. */
   qualityFactors?: Record<string, number>;
-  price: number;
+  btcState?: string;
+  htfResult?: { trend1h: string; confirmed: boolean };
+  tradeJournal?: unknown;
   entry: number;
   stopLoss: number;
   takeProfit: number;
   riskReward: number;
-  /** Human-readable reasons the signal fired. */
   reasons: string[];
-  /** Reasons the signal was blocked (when NEUTRAL). */
   blocked: string[];
-  /** Market regime at signal time: TRENDING_BULL | TRENDING_BEAR | RANGING | HIGH_VOL */
   marketRegime?: string;
-  /** Choppiness Index value 0-100 */
-  chopValue?: number;
-  /** Smart Money Concepts verdict */
-  smcBull?: number;
-  smcBear?: number;
-  /** BTC macro state direction at signal time. */
-  btcState?: string;
-  /** 1H trend direction */
   trend1h?: string;
-  /** Fear & Greed index value */
-  fearGreed?: number;
-  indicators: {
-    rsi: number;
-    ema20: number;
-    ema50: number;
-    ema200: number;
-    sma: number;
-    atr: number;
-    momentum: number;
-    adx: number;
-    macdHistogram: number;
-    stochRsi: number;
-    bollingerPct: number;
-    volRatio: number;
+  chopIndex?: number;
+  adx?: number;
+  atr?: number;
+  indicators?: {
+    ema20: number; ema50: number; ema200: number;
+    rsi: number; sma: number; atr: number; momentum: number;
+    adx?: number; macdHistogram?: number; stochRsi?: number;
+    bollingerPct?: number; volRatio?: number;
   };
   timestamp: number;
 };
 
-/** Signal context captured at entry, carried to the journal on close. */
+export type OpenPosition = {
+  id: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  markPrice: number;
+  qty: number;
+  /** Remaining qty after partial TPs. */
+  qtyRemaining: number;
+  notional: number;
+  stopLoss: number;
+  /** Original SL before breakeven adjustment. */
+  initialStopLoss: number;
+  takeProfit: number;
+  /** Whether chandelier trailing stop is active (after L2 hit). */
+  trailingActive: boolean;
+  /** Current trailing stop level. */
+  trailingStop: number;
+  /** ATR at entry — used for trailing step. */
+  atrValue: number;
+  /** L1 partial TP triggered. */
+  l1Hit: boolean;
+  /** L2 partial TP triggered. */
+  l2Hit: boolean;
+  unrealizedPnl: number;
+  pnlPercent: number;
+  openedAt: number;
+  confidence: number;
+  context?: SignalContext;
+};
+
 export type SignalContext = {
   qualityScore: number;
   marketRegime: string;
@@ -68,26 +75,6 @@ export type SignalContext = {
   qualityFactors?: Record<string, number>;
 };
 
-/** An open paper position tracked by the bot. */
-export type OpenPosition = {
-  id: string;
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  entryPrice: number;
-  markPrice: number;
-  qty: number;
-  notional: number;
-  stopLoss: number;
-  takeProfit: number;
-  unrealizedPnl: number;
-  pnlPercent: number;
-  openedAt: number;
-  confidence: number;
-  /** Signal context for the trade journal. */
-  context?: SignalContext;
-};
-
-/** A closed trade in history. */
 export type ClosedTrade = {
   id: string;
   symbol: string;
@@ -97,14 +84,12 @@ export type ClosedTrade = {
   qty: number;
   realizedPnl: number;
   pnlPercent: number;
-  reason: 'TP' | 'SL' | 'TRAILING' | 'MANUAL' | 'PANIC';
+  reason: 'TP' | 'SL' | 'TRAILING' | 'TP_PARTIAL_L1' | 'TP_PARTIAL_L2' | 'MANUAL' | 'PANIC';
   openedAt: number;
   closedAt: number;
-  /** Signal context for the trade journal. */
   context?: SignalContext;
 };
 
-/** Aggregate bot statistics for the dashboard KPIs. */
 export type BotStats = {
   balance: number;
   startingBalance: number;
@@ -128,7 +113,8 @@ export type BotStats = {
   paused: boolean;
 };
 
-/** Alpaca account snapshot (paper trading). */
+export type EquityPoint = { ts: number; balance: number; };
+
 export type AlpacaAccount = {
   connected: boolean;
   accountNumber: string;
@@ -141,13 +127,6 @@ export type AlpacaAccount = {
   paperTrading: boolean;
 };
 
-/** A point on the equity curve. */
-export type EquityPoint = {
-  ts: number;
-  balance: number;
-};
-
-/** Bot runtime health for the status bar. */
 export type BotHealth = {
   ok: boolean;
   uptimeSec: number;
@@ -159,20 +138,30 @@ export type BotHealth = {
   warnings: string[];
 };
 
-/** Risk-management settings exposed to and editable from the dashboard. */
+export type ConnectionStatus = {
+  connected: boolean;
+  paper: boolean;
+  message: string;
+};
+
 export type RiskSettings = {
   riskPerTradePct: number;
   maxOpenTrades: number;
   maxNotionalPct: number;
   maxTotalExposurePct: number;
+  minConfidence: number;
   dailyMaxLossPct: number;
   maxDrawdownStopPct: number;
-  minConfidence: number;
 };
 
-/** Alpaca connection status reported to the dashboard. */
-export type ConnectionStatus = {
-  connected: boolean;
-  paper: boolean;
-  message: string;
+export type BreakerStatus = {
+  dailyHalted: boolean;
+  weeklyHalted: boolean;
+  activeCooldown: boolean;
+  cooldownMinutesLeft: number;
+  cooldownTriggeredBy: number;
+  consecutiveLosses: number;
+  dailyDrawdownPct: number;
+  weeklyDrawdownPct: number;
+  reducedRiskTradesLeft: number;
 };
