@@ -68,15 +68,45 @@ export type Signal = {
   riskReward: number;
   reasons: string[];
   blocked: string[];
+  /** Market regime: TRENDING_BULL | TRENDING_BEAR | RANGING | HIGH_VOL */
+  marketRegime?: string;
+  /** Choppiness index 0-100 */
+  chopValue?: number;
+  /** SMC bull score */
+  smcBull?: number;
+  /** SMC bear score */
+  smcBear?: number;
+  /** 1H trend direction */
+  trend1h?: string;
+  /** Fear & Greed index */
+  fearGreed?: number;
   indicators: {
     rsi: number;
     ema20: number;
     ema50: number;
+    ema200?: number;
     sma: number;
     atr: number;
     momentum: number;
+    adx?: number;
+    macdHistogram?: number;
+    stochRsi?: number;
+    bollingerPct?: number;
+    volRatio?: number;
   };
   timestamp: number;
+};
+
+/** Circuit Breaker state snapshot. */
+export type BreakerStatus = {
+  dailyHalted: boolean;
+  weeklyHalted: boolean;
+  activeCooldown: boolean;
+  cooldownMinutesLeft: number;
+  dailyDrawdownPct: number;
+  weeklyDrawdownPct: number;
+  consecutiveLosses: number;
+  reducedRiskTradesLeft: number;
 };
 
 export type AlpacaAccount = {
