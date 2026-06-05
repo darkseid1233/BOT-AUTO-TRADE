@@ -10,21 +10,17 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy the whole workspace source
+# Copy entire workspace
 COPY . .
 
-# Install ALL workspace deps (includes vite, typescript, etc.)
-RUN npm install --ignore-scripts 2>/dev/null || true
-# Install deploy-specific deps
-RUN cd deploy && npm install
-
-# Compile TypeScript backend → deploy/dist/
-RUN cd deploy && npx tsc --project tsconfig.build.json || true
-
-# Build React dashboard → deploy/public/
+# ── 1. Build React dashboard → deploy/public/ ─────────────────────────────────
+# Install dashboard deps (vite, react, @vitejs/plugin-react) from its own package.json
 RUN cd alpaca-trader/trader-dashboard && \
-    npm install --ignore-scripts 2>/dev/null || true && \
+    npm install && \
     npx vite build --outDir ../../deploy/public
+
+# ── 2. Compile TypeScript backend → deploy/dist/ ─────────────────────────────
+RUN cd deploy && npm install && npx tsc --project tsconfig.build.json || true
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
@@ -34,8 +30,8 @@ WORKDIR /app
 # Only copy the deploy folder (compiled backend + static frontend + server.js)
 COPY --from=builder /app/deploy ./
 
-# Re-install PRODUCTION deps only (express, node-fetch)
-RUN npm install --production
+# Install PRODUCTION-only deps (express, node-fetch)
+RUN npm install --omit=dev
 
 # Railway injects PORT automatically
 ENV NODE_ENV=production
