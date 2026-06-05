@@ -90,6 +90,22 @@ export function run() {
     }
   });
 
+  // ── Circuit Breaker endpoints ───────────────────────────────────────────
+  app.get('/api/breaker', (_req, res) => res.json(service.getBreakerStatus()));
+  app.post('/api/breaker/resume', async (_req, res) => {
+    try {
+      res.json(await service.resumeBreaker());
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // ── News endpoint ─────────────────────────────────────────────────────
+  app.get('/api/news', async (_req, res) => {
+    const { getLatestNews } = await import('./news-engine.js');
+    res.json(getLatestNews(20));
+  });
+
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
   const server = app.listen(port, () => {
