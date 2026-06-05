@@ -1,0 +1,27 @@
+# Bit workspace
+node_modules/
+.bit/
+.bitmap.backup
+
+# Build artifacts
+deploy/dist/
+deploy/public/
+deploy/node_modules/
+
+# Environment files (NEVER commit keys!)
+.env
+.env.local
+.env.*.local
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
