@@ -1,5 +1,18 @@
-// bit-generated-typescript-config
-
 {
-  "extends": "./../../node_modules/.cache/tsconfig.bit.2b7ec6883ecb51040338dca7f18bd9df49985df1.json"
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": false,
+    "esModuleInterop": true
+  },
+  "include": ["./**/*.ts", "./**/*.tsx"]
 }
