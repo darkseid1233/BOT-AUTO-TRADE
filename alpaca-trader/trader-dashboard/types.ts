@@ -61,6 +61,12 @@ export type Signal = {
   symbol: string;
   side: Side;
   confidence: number;
+  /** Signal Quality Score 0-100 (Weighted Scoring System). */
+  qualityScore?: number;
+  /** Per-factor 0..1 contributions. */
+  qualityFactors?: Record<string, number>;
+  /** BTC macro state direction at signal time. */
+  btcState?: string;
   price: number;
   entry: number;
   stopLoss: number;
@@ -159,4 +165,41 @@ export type ConnectionStatus = {
   connected: boolean;
   paper: boolean;
   message: string;
+};
+
+/** A trade-journal entry (mirror of the service shape). */
+export type JournalEntry = {
+  id: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  closePrice: number;
+  realizedPnl: number;
+  pnlPercent: number;
+  reason: string;
+  closedAt: number;
+  holdMinutes: number;
+  won: boolean;
+  qualityScore: number;
+  marketRegime: string;
+  btcState?: string;
+  trend1h?: string;
+};
+
+/** Per-factor edge from the journal analytics. */
+export type FactorCorrelation = {
+  factor: string;
+  avgWin: number;
+  avgLoss: number;
+  edge: number;
+};
+
+/** Journal analytics report (by regime / quality bucket / factor edge). */
+export type JournalReport = {
+  totalTrades: number;
+  byRegime: Record<string, { trades: number; wins: number; winRate: number; avgPnlPct: number }>;
+  byQualityBucket: Record<string, { trades: number; wins: number; winRate: number; avgPnlPct: number }>;
+  factorEdge: FactorCorrelation[];
+  bestRegime: string | null;
+  worstRegime: string | null;
 };

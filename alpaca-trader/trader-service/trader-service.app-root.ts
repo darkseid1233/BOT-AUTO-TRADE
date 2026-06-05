@@ -26,6 +26,24 @@ export function run() {
   app.get('/api/equity', (_req, res) => res.json(service.getEquity()));
   app.get('/api/signals', (_req, res) => res.json(service.getSignals()));
   app.get('/api/watchlist', (_req, res) => res.json(service.getWatchlist()));
+
+  // ── Trade Journal + analytics ───────────────────────────────────────────
+  app.get('/api/journal', (req, res) => {
+    const limit = Number(req.query.limit) || 100;
+    res.json(service.getJournal(limit));
+  });
+  app.get('/api/journal/report', (_req, res) => res.json(service.getJournalReport()));
+
+  // ── Backtesting Engine + Walk-Forward ───────────────────────────────────
+  app.get('/api/backtest/:symbol', async (req, res) => {
+    try {
+      const symbol = decodeURIComponent(req.params.symbol).toUpperCase();
+      const walk = req.query.walk === 'true';
+      res.json(await service.runBacktest(symbol, walk));
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
   app.get('/api/health/deep', (_req, res) => {
     const h = service.getHealth();
     res.status(h.ok ? 200 : 503).json(h);

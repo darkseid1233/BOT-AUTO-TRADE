@@ -13,8 +13,12 @@ export type Side = 'LONG' | 'SHORT' | 'NEUTRAL';
 export type Signal = {
   symbol: string;
   side: Side;
-  /** Composite confidence score 0-100. */
+  /** Composite confidence score 0-100 (alias of qualityScore). */
   confidence: number;
+  /** Signal Quality Score 0-100 from the Weighted Scoring System. */
+  qualityScore?: number;
+  /** Per-factor 0..1 contributions for the trade journal. */
+  qualityFactors?: Record<string, number>;
   price: number;
   entry: number;
   stopLoss: number;
@@ -31,6 +35,8 @@ export type Signal = {
   /** Smart Money Concepts verdict */
   smcBull?: number;
   smcBear?: number;
+  /** BTC macro state direction at signal time. */
+  btcState?: string;
   /** 1H trend direction */
   trend1h?: string;
   /** Fear & Greed index value */
@@ -52,6 +58,16 @@ export type Signal = {
   timestamp: number;
 };
 
+/** Signal context captured at entry, carried to the journal on close. */
+export type SignalContext = {
+  qualityScore: number;
+  marketRegime: string;
+  btcState?: string;
+  trend1h?: string;
+  entryReasons: string[];
+  qualityFactors?: Record<string, number>;
+};
+
 /** An open paper position tracked by the bot. */
 export type OpenPosition = {
   id: string;
@@ -67,6 +83,8 @@ export type OpenPosition = {
   pnlPercent: number;
   openedAt: number;
   confidence: number;
+  /** Signal context for the trade journal. */
+  context?: SignalContext;
 };
 
 /** A closed trade in history. */
@@ -79,9 +97,11 @@ export type ClosedTrade = {
   qty: number;
   realizedPnl: number;
   pnlPercent: number;
-  reason: 'TP' | 'SL' | 'MANUAL' | 'PANIC';
+  reason: 'TP' | 'SL' | 'TRAILING' | 'MANUAL' | 'PANIC';
   openedAt: number;
   closedAt: number;
+  /** Signal context for the trade journal. */
+  context?: SignalContext;
 };
 
 /** Aggregate bot statistics for the dashboard KPIs. */
