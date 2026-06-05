@@ -1,19 +1,32 @@
-/**
- * Vite config for the standalone Railway build of trader-dashboard.
- * The API lives at /trader-service/api/* on the same server — no proxy needed.
- */
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { resolve } from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Vite runs from deploy/ but source root is the dashboard dir.
+// We must tell Rollup to resolve react/etc from deploy/node_modules/
 export default defineConfig({
   plugins: [react()],
-  root: '../alpaca-trader/trader-dashboard',
+  root: resolve(__dirname, '../alpaca-trader/trader-dashboard'),
+  resolve: {
+    dedupe: ['react', 'react-dom', 'react-router-dom', 'recharts'],
+    alias: {
+      'react/jsx-runtime': resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
+      'react/jsx-dev-runtime': resolve(__dirname, 'node_modules/react/jsx-dev-runtime.js'),
+      'react': resolve(__dirname, 'node_modules/react'),
+      'react-dom': resolve(__dirname, 'node_modules/react-dom'),
+      'react-router-dom': resolve(__dirname, 'node_modules/react-router-dom'),
+      'recharts': resolve(__dirname, 'node_modules/recharts'),
+    },
+  },
   build: {
-    outDir: '../../deploy/public',
+    outDir: resolve(__dirname, 'public'),
     emptyOutDir: true,
   },
   define: {
-    // In production, the dashboard talks to the same Express server — no BACKEND_URL needed
     'process.env.BACKEND_URL': JSON.stringify(''),
   },
 });
