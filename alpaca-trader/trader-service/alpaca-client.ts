@@ -163,9 +163,16 @@ export class AlpacaClient {
 
   /**
    * Place a market order on the paper account. No-op in demo mode.
-   * @param symbol order symbol
+   *
+   * Alpaca crypto requires qty as a fractional number. For very low-priced coins
+   * (DOGE, MATIC, SHIB) Alpaca sometimes rejects qty-based orders with 422 if the
+   * lot-size minimum isn't met. We always send qty (preferred) but catch 422 and
+   * log a clear message instead of crashing the bot — the paper position is already
+   * tracked internally so the mirror failure is non-fatal.
+   *
+   * @param symbol order symbol (e.g. "MATIC/USD")
    * @param side "buy" or "sell"
-   * @param qty quantity
+   * @param qty quantity (fractional units)
    * @returns the broker order id, or a synthetic id in demo mode
    */
   async placeMarketOrder(symbol: string, side: 'buy' | 'sell', qty: number): Promise<string> {
@@ -173,12 +180,30 @@ export class AlpacaClient {
       log.info(`[alpaca] DEMO order ${side} ${qty} ${symbol} (no credentials — simulated)`);
       return `demo-${Date.now()}`;
     }
+    // Alpaca crypto symbols use "/" format (e.g. "MATIC/USD") but the REST orders
+    // endpoint also accepts it natively — no symbol translation needed.
+    const body: Record<string, string> = {
+      symbol,
+      side,
+      qty: qty.toFixed(8),   // max 8dp, avoids scientific notation for tiny qty
+      type: 'market',
+      time_in_force: 'gtc',
+    };
     const res = await fetch(`${this.tradingBase}/v2/orders`, {
       method: 'POST',
       headers: this.headers(),
-      body: JSON.stringify({ symbol, side, qty: String(qty), type: 'market', time_in_force: 'gtc' }),
+      body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`order failed: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      // 422 = Unprocessable Entity (qty below minimum, symbol not tradeable on account, etc.)
+      // This is non-fatal — our internal paper position is already booked; just log.
+      if (res.status === 422) {
+        log.warn(`[alpaca] mirror order 422 ${symbol} ${side} qty=${qty.toFixed(8)} — ${text} (position tracked internally)`);
+        return `skipped-422-${Date.now()}`;
+      }
+      throw new Error(`order failed: ${res.status} ${text}`);
+    }
     const o = (await res.json()) as { id: string };
     return o.id;
   }

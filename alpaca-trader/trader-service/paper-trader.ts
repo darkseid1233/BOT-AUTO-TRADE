@@ -5,26 +5,24 @@ import { recordTrade } from './trade-journal.js';
 import type { AlpacaClient } from './alpaca-client.js';
 import type { Signal, OpenPosition, ClosedTrade, BotStats, EquityPoint } from './types.js';
 
+/** Fallback starting balance when no Alpaca account is connected. */
 const DEFAULT_BALANCE = Number(process.env.INITIAL_BALANCE ?? 100000);
 
 /**
  * Balance-aware paper trader with Trailing Stop + Partial TP L1/L2.
  *
- * Position lifecycle:
- *   L1 @ 1R  -> close partialTpL1ClosePct%, SL -> breakeven+buffer
- *   L2 @ 2R  -> close partialTpL2ClosePct%, activate chandelier trailing
- *   Trailing -> SL follows price (never retreats)
- *   Full TP  -> close remaining qty at takeProfit
- *   SL/Trail -> close remaining qty at stop level
+ * Position lifecycle after entry:
+ *   L1 hit (1R)  → close partialTpL1ClosePct% of qty, move SL to breakeven+buffer
+ *   L2 hit (2R)  → close another partialTpL2ClosePct% of qty, activate chandelier trailing stop
+ *   Trailing     → SL follows price by trailingAtrMult × ATR; never moves against the trade
+ *   Full TP      → close remaining qty at takeProfit
+ *   SL hit       → close all remaining qty at stop level
  *
- * Risk caps:
- *   1. slDist minimum guard   — rejects signal if SL is unrealistically close
- *   2. Per-trade risk cap     — max loss = balance x riskPerTradePct
- *   3. Max notional cap       — qty x price <= equity x maxNotionalPct
- *   4. Absolute sanity cap    — qty x price <= balance x 2
- *   5. Total-exposure cap     — sum open notionals <= equity x maxTotalExposurePct
- *   6. Daily loss limit       — auto-pause when day loss >= dailyMaxLossPct
- *   7. Drawdown stop          — auto-pause when equity falls maxDrawdownStopPct below peak
+ * Risk caps (unchanged):
+ *   1. Per-trade risk cap     — max loss = balance × riskPerTradePct
+ *   2. Total-exposure cap     — sum open notionals ≤ balance × maxTotalExposurePct
+ *   3. Daily loss limit       — auto-pause when day's loss ≥ dailyMaxLossPct
+ *   4. Drawdown stop          — auto-pause when equity falls maxDrawdownStopPct below peak
  */
 export class PaperTrader {
   private startingBalance: number;
@@ -47,10 +45,16 @@ export class PaperTrader {
     this.equityCurve = [{ ts: Date.now(), balance: startingBalance }];
   }
 
+  /**
+   * Sync balance from Alpaca account. Only allowed while no positions are open.
+   * @param balance the new baseline balance
+   */
   setBalance(balance: number): void {
     if (this.positions.size > 0 || !Number.isFinite(balance) || balance <= 0) return;
-    this.startingBalance = balance; this.balance = balance;
-    this.dayStartEquity = balance; this.peakEquity = balance;
+    this.startingBalance = balance;
+    this.balance = balance;
+    this.dayStartEquity = balance;
+    this.peakEquity = balance;
     this.equityCurve = [{ ts: Date.now(), balance }];
     log.info(`[trader] balance baseline set to $${balance.toLocaleString()}`);
   }
@@ -70,6 +74,11 @@ export class PaperTrader {
     return sum;
   }
 
+  /**
+   * Open a position from a signal if ALL risk rules allow.
+   * @param signal the trading signal
+   * @param riskMultiplier size multiplier from circuit breaker / F&G (0-1)
+   */
   async openFromSignal(signal: Signal, riskMultiplier = 1.0): Promise<OpenPosition | null> {
     if (this.paused) return null;
     if (signal.side === 'NEUTRAL') return null;
@@ -85,36 +94,35 @@ export class PaperTrader {
     const riskAmount = equity * r.riskPerTradePct;
     const slDist = Math.abs(signal.entry - signal.stopLoss);
 
-    // Guard: SL distance must be >= 0.05% of price to prevent absurdly large qty.
-    // Root cause: if signal engine produces SL too close to entry (rounding / ATR=0)
-    // the qty explodes to tens of thousands on a $1k account.
-    const minSlDist = signal.entry * 0.0005;
+    // Hard guard: SL distance must be at least 0.1% of price to prevent absurd qty
+    // (raised from 0.05% — 0.05% on MATIC $0.65 = $0.000325 → qty blows up to 30k+)
+    const minSlDist = signal.entry * 0.001;
     if (slDist <= 0 || slDist < minSlDist) {
-      log.warn(
-        `[risk] ${signal.symbol} rejected — SL dist ${slDist.toFixed(6)} < min ${minSlDist.toFixed(6)}` +
-        ` (entry=${signal.entry} SL=${signal.stopLoss}). Signal SL may be miscalculated.`,
-      );
+      log.warn(`[risk] ${signal.symbol} rejected — SL distance ${slDist.toFixed(6)} too small (min ${minSlDist.toFixed(6)}, needs 0.1% of price). Signal SL likely miscalculated.`);
       return null;
     }
 
     let qty = (riskAmount * Math.max(0.1, Math.min(1, riskMultiplier))) / slDist;
     qty = applySizeMultiplier(qty, signal.symbol);
 
-    // Cap 1: max notional per position
+    // Hard cap: single position can never exceed maxNotionalPct of equity
     const maxNotional = equity * r.maxNotionalPct;
     if (qty * signal.entry > maxNotional) qty = maxNotional / signal.entry;
 
-    // Cap 2: absolute sanity — never bet more than 2x full balance as notional
-    const absoluteCap = this.balance * 2;
+    // Absolute sanity cap: single position notional can NEVER exceed the full balance
+    // (using 1x not 2x — on a $1009 account 2x was still $2018 which is reckless)
+    const absoluteCap = this.balance;
     if (qty * signal.entry > absoluteCap) {
-      log.warn(
-        `[risk] ${signal.symbol} qty=${qty.toFixed(2)} notional=$${(qty * signal.entry).toFixed(2)}` +
-        ` exceeds absolute cap $${absoluteCap.toFixed(2)} — capping`,
-      );
+      log.warn(`[risk] ${signal.symbol} qty=${qty.toFixed(4)} notional=${(qty * signal.entry).toFixed(2)} exceeds absolute cap ${absoluteCap.toFixed(2)} — hard capping to 1× balance`);
       qty = absoluteCap / signal.entry;
     }
 
-    // Cap 3: total exposure across all open positions
+    // Final sanity: qty must produce a notional > $1 after all caps
+    if (qty * signal.entry < 1) {
+      log.warn(`[risk] ${signal.symbol} notional ${(qty * signal.entry).toFixed(4)} < $1 — skip (signal too noisy)`);
+      return null;
+    }
+
     const remainingExposure = equity * r.maxTotalExposurePct - this.totalExposure();
     if (remainingExposure <= 0) {
       log.warn(`[risk] ${signal.symbol} blocked — total exposure cap reached`);
@@ -124,44 +132,68 @@ export class PaperTrader {
     if (qty <= 0) return null;
 
     const cfg = getStrategyConfig();
+    // ATR stored on signal for trailing stop calculations
     const atrValue = signal.indicators?.atr ?? slDist / cfg.atrSlMult;
 
     const pos: OpenPosition = {
       id: `P${this.idSeq++}`,
-      symbol: signal.symbol, side: signal.side,
-      entryPrice: signal.entry, markPrice: signal.entry,
-      qty, qtyRemaining: qty,
+      symbol: signal.symbol,
+      side: signal.side,
+      entryPrice: signal.entry,
+      markPrice: signal.entry,
+      qty,
+      qtyRemaining: qty,           // tracks partial closes
       notional: qty * signal.entry,
-      stopLoss: signal.stopLoss, initialStopLoss: signal.stopLoss,
+      stopLoss: signal.stopLoss,
+      initialStopLoss: signal.stopLoss,
       takeProfit: signal.takeProfit,
-      trailingActive: false, trailingStop: signal.stopLoss,
-      atrValue, l1Hit: false, l2Hit: false,
-      unrealizedPnl: 0, pnlPercent: 0,
-      openedAt: Date.now(), confidence: signal.confidence,
+      trailingActive: false,
+      trailingStop: signal.stopLoss,
+      atrValue,
+      l1Hit: false,
+      l2Hit: false,
+      unrealizedPnl: 0,
+      pnlPercent: 0,
+      openedAt: Date.now(),
+      confidence: signal.confidence,
       context: {
         qualityScore: signal.qualityScore ?? signal.confidence,
         marketRegime: signal.marketRegime ?? 'UNKNOWN',
-        btcState: signal.btcState, trend1h: signal.trend1h,
-        entryReasons: signal.reasons ?? [], qualityFactors: signal.qualityFactors,
+        btcState: signal.btcState,
+        trend1h: signal.trend1h,
+        entryReasons: signal.reasons ?? [],
+        qualityFactors: signal.qualityFactors,
       },
     };
     this.positions.set(signal.symbol, pos);
 
-    this.client
-      .placeMarketOrder(signal.symbol, signal.side === 'LONG' ? 'buy' : 'sell', Number(qty.toFixed(6)))
-      .catch((e) => log.warn(`[trader] mirror order ${signal.symbol}: ${(e as Error).message}`));
+    try {
+      await this.client.placeMarketOrder(
+        signal.symbol,
+        signal.side === 'LONG' ? 'buy' : 'sell',
+        Number(qty.toFixed(6)),
+      );
+    } catch (e) {
+      log.warn(`[trader] mirror order failed ${signal.symbol}: ${(e as Error).message}`);
+    }
 
     const maxLoss = qty * slDist;
     const notional = qty * signal.entry;
     log.info(
-      `OPEN ${pos.side} ${pos.symbol} @ ${pos.entryPrice.toFixed(4)} ` +
-      `SL=${pos.stopLoss.toFixed(4)} TP=${pos.takeProfit.toFixed(4)} ` +
-      `qty=${qty.toFixed(4)} notional=$${notional.toFixed(2)} risk=$${maxLoss.toFixed(2)} ` +
-      `slDist=${slDist.toFixed(6)} atr=${atrValue.toFixed(6)} conf=${pos.confidence}`,
+      `OPEN ${pos.side} ${pos.symbol} @ ${pos.entryPrice.toFixed(2)} ` +
+      `SL=${pos.stopLoss.toFixed(2)} TP=${pos.takeProfit.toFixed(2)} ` +
+      `qty=${qty.toFixed(4)} notional=${notional.toFixed(2)} risk=${maxLoss.toFixed(2)} (${(r.riskPerTradePct * 100).toFixed(1)}%) ` +
+      `slDist=${slDist.toFixed(6)} conf=${pos.confidence} atr=${atrValue.toFixed(4)}`,
     );
     return pos;
   }
 
+  /**
+   * Mark positions to market.
+   * Runs Partial TP L1/L2 → trailing stop → full SL/TP logic per position.
+   * @param priceFor async function returning the current price for a symbol
+   * @returns closed trades this tick
+   */
   async tick(priceFor: (symbol: string) => Promise<number>): Promise<ClosedTrade[]> {
     const cfg = getStrategyConfig();
     const closed: ClosedTrade[] = [];
@@ -170,57 +202,80 @@ export class PaperTrader {
       let price = pos.markPrice;
       try { price = await priceFor(pos.symbol); } catch { /* keep last mark */ }
       pos.markPrice = price;
+
       const isLong = pos.side === 'LONG';
       const dir = isLong ? 1 : -1;
       const slDist = Math.abs(pos.entryPrice - pos.initialStopLoss);
+
+      // ── Update unrealized PnL on remaining qty ────────────────────────────────────
       pos.unrealizedPnl = (price - pos.entryPrice) * pos.qtyRemaining * dir;
       pos.pnlPercent = ((price - pos.entryPrice) / pos.entryPrice) * 100 * dir;
 
-      // L1 Partial TP
+      // ── Partial TP L1 — close first tranche at 1R ────────────────────────────────
       if (cfg.partialTpEnabled && !pos.l1Hit && slDist > 0) {
-        const l1px = pos.entryPrice + dir * slDist * cfg.partialTpL1R;
-        if (isLong ? price >= l1px : price <= l1px) {
-          this.bookPartialClose(pos, l1px, pos.qtyRemaining * (cfg.partialTpL1ClosePct / 100), 'TP_PARTIAL_L1');
-          pos.stopLoss = pos.entryPrice + dir * (slDist * cfg.breakevenBufferR);
+        const l1Price = pos.entryPrice + dir * slDist * cfg.partialTpL1R;
+        const hitL1 = isLong ? price >= l1Price : price <= l1Price;
+        if (hitL1) {
+          const qtyToClose = pos.qtyRemaining * (cfg.partialTpL1ClosePct / 100);
+          const fillPx = l1Price;
+          this.bookPartialClose(pos, fillPx, qtyToClose, 'TP_PARTIAL_L1');
+          // Move SL to breakeven + buffer
+          const beBuffer = slDist * cfg.breakevenBufferR;
+          pos.stopLoss = pos.entryPrice + dir * beBuffer;
           pos.l1Hit = true;
-          log.info(`L1 TP ${pos.symbol} @ ${l1px.toFixed(4)} SL->BE ${pos.stopLoss.toFixed(4)}`);
+          log.info(
+            `⚡ L1 PARTIAL TP ${pos.symbol} @ ${fillPx.toFixed(2)} ` +
+            `(${cfg.partialTpL1ClosePct}% qty) SL→breakeven ${pos.stopLoss.toFixed(2)}`,
+          );
         }
       }
 
-      // L2 Partial TP + activate trailing
+      // ── Partial TP L2 — close second tranche at 2R, activate trailing ──────────
       if (cfg.partialTpEnabled && pos.l1Hit && !pos.l2Hit && slDist > 0) {
-        const l2px = pos.entryPrice + dir * slDist * cfg.partialTpL2R;
-        if (isLong ? price >= l2px : price <= l2px) {
-          this.bookPartialClose(pos, l2px, pos.qtyRemaining * (cfg.partialTpL2ClosePct / 100), 'TP_PARTIAL_L2');
+        const l2Price = pos.entryPrice + dir * slDist * cfg.partialTpL2R;
+        const hitL2 = isLong ? price >= l2Price : price <= l2Price;
+        if (hitL2) {
+          const qtyToClose = pos.qtyRemaining * (cfg.partialTpL2ClosePct / 100);
+          const fillPx = l2Price;
+          this.bookPartialClose(pos, fillPx, qtyToClose, 'TP_PARTIAL_L2');
+          // Activate trailing stop on remainder
           pos.trailingActive = true;
           pos.trailingStop = isLong
             ? price - pos.atrValue * cfg.trailingAtrMult
             : price + pos.atrValue * cfg.trailingAtrMult;
           pos.l2Hit = true;
-          log.info(`L2 TP ${pos.symbol} @ ${l2px.toFixed(4)} trailing ACTIVE @ ${pos.trailingStop.toFixed(4)}`);
+          log.info(
+            `⚡ L2 PARTIAL TP ${pos.symbol} @ ${fillPx.toFixed(2)} ` +
+            `(${cfg.partialTpL2ClosePct}% qty) trailing ACTIVATED @ ${pos.trailingStop.toFixed(2)}`,
+          );
         }
       }
 
-      // Advance chandelier trailing (never retreats)
+      // ── Chandelier trailing stop — advance with price, NEVER retreats ─────────
       if (pos.trailingActive && pos.qtyRemaining > 0) {
         const newTrail = isLong
           ? price - pos.atrValue * cfg.trailingAtrMult
           : price + pos.atrValue * cfg.trailingAtrMult;
         if (isLong && newTrail > pos.trailingStop) pos.trailingStop = newTrail;
         if (!isLong && newTrail < pos.trailingStop) pos.trailingStop = newTrail;
+        // Sync the display SL to the trailing level
         if (isLong && pos.trailingStop > pos.stopLoss) pos.stopLoss = pos.trailingStop;
         if (!isLong && pos.trailingStop < pos.stopLoss) pos.stopLoss = pos.trailingStop;
       }
 
-      // Fully closed by partials
-      if (pos.qtyRemaining <= 0) { this.positions.delete(pos.symbol); continue; }
+      // ── Exit checks on remaining qty ─────────────────────────────────────────────
+      if (pos.qtyRemaining <= 0) {
+        // Position fully closed by partial TPs — remove
+        this.positions.delete(pos.symbol);
+        continue;
+      }
 
-      // Final exit
       const hitSl = isLong ? price <= pos.stopLoss : price >= pos.stopLoss;
       const hitTp = isLong ? price >= pos.takeProfit : price <= pos.takeProfit;
+
       if (hitTp || hitSl) {
         const fill = hitTp ? pos.takeProfit : pos.stopLoss;
-        const reason: ClosedTrade['reason'] = hitTp ? 'TP' : (pos.trailingActive ? 'TRAILING' : 'SL');
+        const reason = hitTp ? 'TP' : (pos.trailingActive ? 'TRAILING' : 'SL');
         closed.push(this.closeAt(pos, fill, reason));
       }
     }
@@ -232,23 +287,38 @@ export class PaperTrader {
     const r = this.risk.get();
     this.checkDailyStop(r.dailyMaxLossPct);
     this.checkDrawdownStop(r.maxDrawdownStopPct);
+
     return closed;
   }
 
-  private bookPartialClose(pos: OpenPosition, fillPx: number, qtyToClose: number, tag: string): void {
+  /**
+   * Book a partial close without removing the position.
+   * Reduces qtyRemaining and updates balance.
+   */
+  private bookPartialClose(
+    pos: OpenPosition,
+    fillPx: number,
+    qtyToClose: number,
+    tag: string,
+  ): void {
     const dir = pos.side === 'LONG' ? 1 : -1;
-    this.balance += (fillPx - pos.entryPrice) * qtyToClose * dir;
+    const pnl = (fillPx - pos.entryPrice) * qtyToClose * dir;
+    this.balance += pnl;
     pos.qtyRemaining -= qtyToClose;
     pos.notional = pos.qtyRemaining * pos.markPrice;
+    // Mirror partial close to Alpaca (no-op in demo mode)
     this.client
       .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
       .catch((e) => log.warn(`[trader] partial mirror ${pos.symbol} ${tag}: ${(e as Error).message}`));
   }
 
   private checkDailyStop(limitPct: number): boolean {
-    const pct = (this.getEquity() - this.dayStartEquity) / this.dayStartEquity;
-    if (pct <= -limitPct) {
-      if (!this.paused) { this.pause('daily loss limit reached'); log.error(`DAILY STOP ${(pct * 100).toFixed(2)}%`); }
+    const dailyPnlPct = (this.getEquity() - this.dayStartEquity) / this.dayStartEquity;
+    if (dailyPnlPct <= -limitPct) {
+      if (!this.paused) {
+        this.pause(`daily loss limit ${(limitPct * 100).toFixed(1)}% reached`);
+        log.error(`🛑 DAILY STOP — loss ${(dailyPnlPct * 100).toFixed(2)}% ≥ ${(limitPct * 100).toFixed(1)}% limit.`);
+      }
       return true;
     }
     return false;
@@ -258,7 +328,10 @@ export class PaperTrader {
     if (this.peakEquity <= 0) return false;
     const dd = (this.peakEquity - this.getEquity()) / this.peakEquity;
     if (dd >= limitPct) {
-      if (!this.paused) { this.pause('max drawdown reached'); log.error(`DRAWDOWN STOP ${(dd * 100).toFixed(2)}%`); }
+      if (!this.paused) {
+        this.pause(`max drawdown ${(limitPct * 100).toFixed(1)}% reached`);
+        log.error(`🛑 DRAWDOWN STOP — ${(dd * 100).toFixed(2)}% ≥ ${(limitPct * 100).toFixed(1)}% limit.`);
+      }
       return true;
     }
     return false;
@@ -272,28 +345,41 @@ export class PaperTrader {
 
   async closeAll(): Promise<ClosedTrade[]> {
     const closed: ClosedTrade[] = [];
-    for (const pos of this.positions.values()) closed.push(this.closeAt(pos, pos.markPrice, 'PANIC'));
+    for (const pos of this.positions.values()) {
+      closed.push(this.closeAt(pos, pos.markPrice, 'PANIC'));
+    }
     return closed;
   }
 
   private closeAt(pos: OpenPosition, price: number, reason: ClosedTrade['reason']): ClosedTrade {
     const dir = pos.side === 'LONG' ? 1 : -1;
+    // Only close the REMAINING qty (earlier partial TPs reduced it)
     const qtyToClose = pos.qtyRemaining > 0 ? pos.qtyRemaining : pos.qty;
     const realizedPnl = (price - pos.entryPrice) * qtyToClose * dir;
     this.balance += realizedPnl;
     pos.qtyRemaining = 0;
+
     this.client
       .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
-      .catch((e) => log.warn(`[trader] mirror close ${pos.symbol}: ${(e as Error).message}`));
+      .catch((e) => log.warn(`[trader] mirror close failed ${pos.symbol}: ${(e as Error).message}`));
+
     const trade: ClosedTrade = {
-      id: pos.id, symbol: pos.symbol, side: pos.side,
-      entryPrice: pos.entryPrice, closePrice: price,
-      qty: pos.qty, realizedPnl,
+      id: pos.id,
+      symbol: pos.symbol,
+      side: pos.side,
+      entryPrice: pos.entryPrice,
+      closePrice: price,
+      qty: pos.qty,           // original full qty for journaling
+      realizedPnl,
       pnlPercent: ((price - pos.entryPrice) / pos.entryPrice) * 100 * dir,
-      reason, openedAt: pos.openedAt, closedAt: Date.now(), context: pos.context,
+      reason,
+      openedAt: pos.openedAt,
+      closedAt: Date.now(),
+      context: pos.context,
     };
     this.history.push(trade);
     this.positions.delete(pos.symbol);
+
     recordTrade({
       id: trade.id, symbol: trade.symbol, side: trade.side,
       entryPrice: trade.entryPrice, closePrice: trade.closePrice, qty: trade.qty,
@@ -303,10 +389,12 @@ export class PaperTrader {
       qualityScore: pos.context?.qualityScore ?? pos.confidence,
       marketRegime: pos.context?.marketRegime ?? 'UNKNOWN',
       btcState: pos.context?.btcState, trend1h: pos.context?.trend1h,
-      entryReasons: pos.context?.entryReasons ?? [], qualityFactors: pos.context?.qualityFactors,
+      entryReasons: pos.context?.entryReasons ?? [],
+      qualityFactors: pos.context?.qualityFactors,
     });
-    const tag = realizedPnl >= 0 ? 'WIN' : 'LOSS';
-    log.info(`${tag} CLOSE ${reason} ${pos.symbol} @ ${price.toFixed(4)} PnL=$${realizedPnl.toFixed(2)} (L1=${pos.l1Hit} L2=${pos.l2Hit} trail=${pos.trailingActive})`);
+
+    const emoji = realizedPnl >= 0 ? '✅' : '❌';
+    log.info(`${emoji} CLOSE ${reason} ${pos.symbol} @ ${price.toFixed(2)} PnL=${realizedPnl.toFixed(2)} (${pos.l1Hit ? 'L1' : ''}${pos.l2Hit ? '+L2' : ''} hit, trailing=${pos.trailingActive})`);
     return trade;
   }
 
@@ -326,7 +414,8 @@ export class PaperTrader {
     const returns = this.history.map((t) => t.pnlPercent);
     const meanRet = returns.length ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
     const variance = returns.length ? returns.reduce((a, b) => a + (b - meanRet) ** 2, 0) / returns.length : 0;
-    const sharpe = Math.sqrt(variance) > 0 ? (meanRet / Math.sqrt(variance)) * Math.sqrt(returns.length || 1) : 0;
+    const std = Math.sqrt(variance);
+    const sharpe = std > 0 ? (meanRet / std) * Math.sqrt(returns.length || 1) : 0;
     let peak = this.startingBalance, maxDd = 0;
     for (const p of this.equityCurve) {
       if (p.balance > peak) peak = p.balance;
