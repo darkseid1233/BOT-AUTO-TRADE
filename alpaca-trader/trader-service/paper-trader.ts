@@ -191,14 +191,22 @@ export class PaperTrader {
     };
     this.positions.set(signal.symbol, pos);
 
-    try {
-      await this.client.placeMarketOrder(
-        signal.symbol,
-        signal.side === 'LONG' ? 'buy' : 'sell',
-        Number(qty.toFixed(6)),
-      );
-    } catch (e) {
-      log.warn(`[trader] mirror order failed ${signal.symbol}: ${(e as Error).message}`);
+    // Mirror order to Alpaca only when explicitly enabled (ENABLE_MIRROR=true).
+    // By default this is OFF — paper trader manages positions internally.
+    // The old code always tried to place real orders which caused 403 spam when
+    // the Alpaca paper account has insufficient crypto balance (it always will
+    // for crypto-settled orders on a fresh paper account).
+    if (process.env.ENABLE_MIRROR === 'true') {
+      try {
+        await this.client.placeMarketOrder(
+          signal.symbol,
+          signal.side === 'LONG' ? 'buy' : 'sell',
+          Number(qty.toFixed(6)),
+        );
+        log.info(`[trader] mirror order placed ${signal.symbol} ${signal.side} qty=${qty.toFixed(6)}`);
+      } catch (e) {
+        log.debug(`[trader] mirror order skipped ${signal.symbol}: ${(e as Error).message}`);
+      }
     }
 
     // Entry taker fee — charged immediately so the cost model matches the backtest.

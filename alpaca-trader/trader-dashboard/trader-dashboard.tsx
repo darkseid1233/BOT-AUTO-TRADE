@@ -9,6 +9,7 @@ import { SignalGrid } from './signal-grid.js';
 import { LogViewer } from './log-viewer.js';
 import { AnalyticsPanel } from './analytics-panel.js';
 import { ScanFunnel } from './scan-funnel.js';
+import { MarketHeatmap } from './market-heatmap.js';
 import { ConnectModal } from './connect-modal.js';
 import { RiskPanel } from './risk-panel.js';
 import { fmtTime, fmtMoney, fmtAgo } from './format.js';
@@ -252,17 +253,39 @@ function AlpacaBot() {
               </div>
               <PositionsTable positions={positions} onClose={closeSymbol} />
             </div>
+
+            {/* Quick market overview on the main page too */}
+            {signals.length > 0 && (
+              <div className={styles.card}>
+                <div className={styles.cardHeader}>
+                  <span className={styles.cardTitle}>🌡️ Market Overview</span>
+                  <span className={styles.cardBadge}>{signals.filter((s) => s.side !== 'NEUTRAL').length} active signals</span>
+                </div>
+                <MarketHeatmap signals={signals} />
+              </div>
+            )}
           </>
         )}
 
         {tab === 'signals' && (
-          <div className={styles.card}>
-            <div className={styles.cardHeader}>
-              <span className={styles.cardTitle}>🔔 Live Signals</span>
-              <span className={styles.cardBadge}>{signals.filter((s) => s.side !== 'NEUTRAL').length} active / {signals.length} scanned</span>
+          <>
+            {/* Market heatmap — quick overview of all symbols */}
+            <div className={styles.card}>
+              <div className={styles.cardHeader}>
+                <span className={styles.cardTitle}>🌡️ Market Heatmap</span>
+                <span className={styles.cardBadge}>{signals.filter((s) => s.side !== 'NEUTRAL').length} active · {signals.length} symbols</span>
+              </div>
+              <MarketHeatmap signals={signals} />
             </div>
-            <SignalGrid signals={signals} />
-          </div>
+            {/* Detailed signal cards */}
+            <div className={styles.card}>
+              <div className={styles.cardHeader}>
+                <span className={styles.cardTitle}>🔔 Signal Details</span>
+                <span className={styles.cardBadge}>click-to-expand · sorted by quality</span>
+              </div>
+              <SignalGrid signals={signals} />
+            </div>
+          </>
         )}
 
         {tab === 'positions' && (

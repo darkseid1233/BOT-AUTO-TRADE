@@ -44,18 +44,18 @@ export function SignalGrid({ signals }: { signals: Signal[] }) {
                 fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
                 background: regimeColor[regime] ?? '#555', color: '#fff', fontWeight: 600,
               }}>{regime.replace('_', ' ')}</span>
-              {s.chopValue !== undefined && (
+              {(s.chopIndex ?? s.chopValue) !== undefined && (
                 <span style={{
                   fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                  background: s.chopValue > 61.8 ? '#e74c3c' : s.chopValue < 38.2 ? '#2ecc71' : '#555',
+                  background: (s.chopIndex ?? s.chopValue ?? 50) > 61.8 ? '#e74c3c' : (s.chopIndex ?? s.chopValue ?? 50) < 38.2 ? '#2ecc71' : '#555',
                   color: '#fff',
-                }}>CHOP {s.chopValue.toFixed(0)}</span>
+                }}>CHOP {(s.chopIndex ?? s.chopValue ?? 0).toFixed(0)}</span>
               )}
-              {s.indicators.adx !== undefined && (
+              {(s.indicators?.adx ?? s.adx) !== undefined && (
                 <span style={{
                   fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                  background: (s.indicators.adx ?? 0) > 25 ? '#3498db' : '#555', color: '#fff',
-                }}>ADX {(s.indicators.adx ?? 0).toFixed(0)}</span>
+                  background: (s.indicators?.adx ?? s.adx ?? 0) > 25 ? '#3498db' : '#555', color: '#fff',
+                }}>ADX {(s.indicators?.adx ?? s.adx ?? 0).toFixed(0)}</span>
               )}
               {s.trend1h && s.trend1h !== 'pending' && (
                 <span style={{
@@ -99,7 +99,7 @@ export function SignalGrid({ signals }: { signals: Signal[] }) {
               <span>Conf <strong>{s.confidence}</strong></span>
               <span>R:R <strong>{Number.isFinite(s.riskReward) ? s.riskReward.toFixed(2) : '—'}</strong></span>
               <span>Entry <strong>{fmtPrice(s.entry || s.price)}</strong></span>
-              <span>RSI <strong>{s.indicators.rsi.toFixed(0)}</strong></span>
+              {s.indicators?.rsi !== undefined && <span>RSI <strong>{s.indicators.rsi.toFixed(0)}</strong></span>}
               <span>SL <strong className={styles.short}>{fmtPrice(s.stopLoss)}</strong></span>
               <span>TP <strong className={styles.long}>{fmtPrice(s.takeProfit)}</strong></span>
             </div>
@@ -108,8 +108,8 @@ export function SignalGrid({ signals }: { signals: Signal[] }) {
             {(s.smcBull !== undefined || s.smcBear !== undefined) && (
               <div style={{ fontSize: '11px', color: '#aaa', marginTop: '4px' }}>
                 SMC 🟢{s.smcBull ?? 0} 🔴{s.smcBear ?? 0}
-                {s.indicators.stochRsi !== undefined && ` · StRSI ${(s.indicators.stochRsi ?? 0).toFixed(0)}`}
-                {s.indicators.volRatio !== undefined && ` · Vol×${(s.indicators.volRatio ?? 1).toFixed(1)}`}
+                {s.indicators?.stochRsi !== undefined && ` · StRSI ${(s.indicators.stochRsi ?? 0).toFixed(0)}`}
+                {s.indicators?.volRatio !== undefined && ` · Vol×${(s.indicators.volRatio ?? 1).toFixed(1)}`}
               </div>
             )}
 
