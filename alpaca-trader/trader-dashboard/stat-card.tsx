@@ -2,10 +2,10 @@ import styles from './trader-dashboard.module.css';
 
 /**
  * Single KPI stat card.
- * @param props.label metric label
- * @param props.value formatted metric value
- * @param props.sub optional sub-label
- * @param props.tone "pos" | "neg" | "neutral" — colours the accent bar
+ * @param label metric label
+ * @param value formatted metric value
+ * @param sub optional sub-label
+ * @param tone "pos" | "neg" | "neutral" — colours the left accent bar
  */
 export function StatCard({
   label,
@@ -18,15 +18,11 @@ export function StatCard({
   sub?: string;
   tone?: 'pos' | 'neg' | 'neutral';
 }) {
-  const cls =
-    tone === 'pos' ? `${styles.statCard} ${styles.statCardPos}`
-    : tone === 'neg' ? `${styles.statCard} ${styles.statCardNeg}`
-    : styles.statCard;
-  const valueCls = tone === 'pos' ? styles.pos : tone === 'neg' ? styles.neg : '';
+  const valueColor = tone === 'pos' ? '#16d39a' : tone === 'neg' ? '#ff5470' : 'var(--text)';
   return (
-    <div className={cls}>
+    <div className={`${styles.statCard} ${tone === 'pos' ? styles.pos : tone === 'neg' ? styles.neg : styles.neutral}`}>
       <div className={styles.statLabel}>{label}</div>
-      <div className={`${styles.statValue} ${valueCls}`}>{value}</div>
+      <div className={styles.statValue} style={{ color: valueColor }}>{value}</div>
       {sub && <div className={styles.statSub}>{sub}</div>}
     </div>
   );

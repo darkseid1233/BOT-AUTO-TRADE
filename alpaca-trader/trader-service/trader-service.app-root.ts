@@ -40,6 +40,22 @@ export function run() {
     res.json(service.getLogs(since, limit));
   });
 
+  // Dashboard uses /api/pause, /api/resume, /api/panic, /api/close — shorter aliases
+  app.post('/api/pause', (_req, res) => res.json(service.pause()));
+  app.post('/api/resume', (_req, res) => res.json(service.resume()));
+  app.post('/api/panic', async (_req, res) => {
+    try { res.json(await service.panic()); } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  });
+  app.post('/api/close', async (req, res) => {
+    try {
+      const symbol = (req.body?.symbol ?? '').toUpperCase();
+      if (!symbol) { res.status(400).json({ error: 'symbol required' }); return; }
+      const out = await service.closeSymbol(symbol);
+      if (!out.closed) { res.status(404).json({ error: 'no open position for symbol' }); return; }
+      res.json(out);
+    } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  });
+  // Legacy /api/control/* kept for backward compat
   app.post('/api/control/pause', (_req, res) => res.json(service.pause()));
   app.post('/api/control/resume', (_req, res) => res.json(service.resume()));
   app.post('/api/control/panic', async (_req, res) => {

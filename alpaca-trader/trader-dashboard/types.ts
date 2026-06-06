@@ -1,5 +1,7 @@
 /**
- * Dashboard-side types mirroring the trader-service REST API shapes.
+ * Dashboard-side types — fully synced with the trader-service REST API.
+ * Updated: new indicators (Supertrend, VWAP, Divergence, CandlePattern),
+ * per-symbol stats, signal context, backtest types.
  */
 
 export type Side = 'LONG' | 'SHORT' | 'NEUTRAL';
@@ -25,10 +27,10 @@ export type BotStats = {
   expectancy: number;
   availableUSDT: number;
   paused: boolean;
-  totalCosts?: number;
+  totalCosts: number;
 };
 
-/** Per-gate rejection histogram surfaced by /scan-stats. */
+/** Per-gate rejection histogram from /api/scan-stats */
 export type GateStats = {
   insufficientBars: number;
   regime: number;
@@ -46,6 +48,15 @@ export type GateStats = {
 
 export type ScanStats = { cumulative: GateStats; lastScan: GateStats };
 
+export type SignalContext = {
+  qualityScore: number;
+  marketRegime: string;
+  btcState?: string;
+  trend1h?: string;
+  entryReasons: string[];
+  qualityFactors?: Record<string, number>;
+};
+
 export type OpenPosition = {
   id: string;
   symbol: string;
@@ -60,12 +71,14 @@ export type OpenPosition = {
   takeProfit: number;
   trailingActive: boolean;
   trailingStop: number;
+  atrValue: number;
   l1Hit: boolean;
   l2Hit: boolean;
   unrealizedPnl: number;
   pnlPercent: number;
   openedAt: number;
   confidence: number;
+  context?: SignalContext;
 };
 
 export type ClosedTrade = {
@@ -80,6 +93,7 @@ export type ClosedTrade = {
   reason: 'TP' | 'SL' | 'TRAILING' | 'TP_PARTIAL_L1' | 'TP_PARTIAL_L2' | 'MANUAL' | 'PANIC';
   openedAt: number;
   closedAt: number;
+  context?: SignalContext;
 };
 
 export type Signal = {
@@ -89,6 +103,15 @@ export type Signal = {
   qualityScore?: number;
   qualityFactors?: Record<string, number>;
   btcState?: string;
+  trend1h?: string;
+  chopIndex?: number;
+  chopValue?: number;
+  adx?: number;
+  atr?: number;
+  marketRegime?: string;
+  smcBull?: number;
+  smcBear?: number;
+  fearGreed?: number;
   price: number;
   entry: number;
   stopLoss: number;
@@ -96,16 +119,18 @@ export type Signal = {
   riskReward: number;
   reasons: string[];
   blocked: string[];
-  marketRegime?: string;
-  trend1h?: string;
-  chopIndex?: number;
-  adx?: number;
-  atr?: number;
   indicators?: {
     ema20: number; ema50: number; ema200: number;
     rsi: number; sma: number; atr: number; momentum: number;
     adx?: number; macdHistogram?: number; stochRsi?: number;
     bollingerPct?: number; volRatio?: number;
+    // new from research audit
+    supertrend?: number;
+    supertrendDir?: 'up' | 'down';
+    vwap?: number;
+    vwapDistPct?: number;
+    divergence?: string;
+    candlePattern?: string;
   };
   timestamp: number;
 };
@@ -122,7 +147,7 @@ export type AlpacaAccount = {
   paperTrading: boolean;
 };
 
-export type EquityPoint = { ts: number; balance: number; };
+export type EquityPoint = { ts: number; balance: number };
 
 export type BotHealth = {
   ok: boolean;
@@ -135,7 +160,7 @@ export type BotHealth = {
   warnings: string[];
 };
 
-export type LogEntry = { ts: number; level: 'info' | 'warn' | 'error' | 'debug'; msg: string; };
+export type LogEntry = { ts: number; level: 'info' | 'warn' | 'error' | 'debug'; msg: string };
 
 export type RiskSettings = {
   riskPerTradePct: number;
@@ -147,7 +172,7 @@ export type RiskSettings = {
   maxDrawdownStopPct: number;
 };
 
-export type ConnectionStatus = { connected: boolean; paper: boolean; message: string; };
+export type ConnectionStatus = { connected: boolean; paper: boolean; message: string };
 
 export type JournalEntry = {
   id: string; symbol: string; side: 'LONG' | 'SHORT';
@@ -179,4 +204,38 @@ export type BreakerStatus = {
   dailyDrawdownPct: number;
   weeklyDrawdownPct: number;
   reducedRiskTradesLeft: number;
+};
+
+/** Per-symbol performance breakdown from /api/per-symbol-stats */
+export type PerSymbolStats = Record<string, {
+  trades: number;
+  wins: number;
+  winRate: number;
+  totalPnl: number;
+  avgWin: number;
+  avgLoss: number;
+  bestTrade: number;
+  worstTrade: number;
+  avgDurationMs: number;
+  reasons: Record<string, number>;
+}>;
+
+export type BacktestResult = {
+  symbol: string;
+  timeframe: string;
+  bars: number;
+  totalSignals: number;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  timeouts: number;
+  winRate: number;
+  avgPnlPct: number;
+  profitFactor: number;
+  expectancyR: number;
+  sharpe: number;
+  maxDrawdownPct: number;
+  totalReturnPct: number;
+  startBalance: number;
+  finalBalance: number;
 };

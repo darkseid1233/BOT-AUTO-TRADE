@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
-  BotStats, OpenPosition, ClosedTrade, Signal, AlpacaAccount, EquityPoint, BotHealth, LogEntry,
-  RiskSettings, ConnectionStatus, JournalEntry, JournalReport, BreakerStatus, ScanStats,
+  BotStats, OpenPosition, ClosedTrade, Signal, AlpacaAccount, EquityPoint, BotHealth,
+  LogEntry, RiskSettings, ConnectionStatus, JournalEntry, JournalReport,
+  BreakerStatus, ScanStats, PerSymbolStats, BacktestResult,
 } from './types.js';
 
 const BASE = '/trader-service';
@@ -41,8 +42,11 @@ export async function updateRisk(patch: Partial<RiskSettings>): Promise<RiskSett
 export async function fetchBacktestCompare(symbol: string, walk = true): Promise<unknown> {
   return getJson<unknown>(`/api/backtest/compare/${encodeURIComponent(symbol)}?walk=${walk}`);
 }
-export async function fetchBacktest(symbol: string, walkForward = false): Promise<unknown> {
-  return getJson<unknown>(`/api/backtest/${encodeURIComponent(symbol)}?walk=${walkForward}`);
+export async function fetchBacktest(symbol: string, walkForward = false): Promise<BacktestResult> {
+  return getJson<BacktestResult>(`/api/backtest/${encodeURIComponent(symbol)}?walk=${walkForward}`);
+}
+export async function fetchPerSymbolStats(): Promise<PerSymbolStats> {
+  return getJson<PerSymbolStats>('/api/per-symbol-stats');
 }
 
 export type BotData = {
@@ -57,6 +61,7 @@ export type BotData = {
   risk: RiskSettings | null;
   breaker: BreakerStatus | null;
   scanStats: ScanStats | null;
+  perSymbolStats: PerSymbolStats | null;
   loading: boolean;
   error: string | null;
   lastUpdated: number;
@@ -75,6 +80,7 @@ export function useBotApi(pollMs = 5000): BotData {
   const [risk, setRisk] = useState<RiskSettings | null>(null);
   const [breaker, setBreaker] = useState<BreakerStatus | null>(null);
   const [scanStats, setScanStats] = useState<ScanStats | null>(null);
+  const [perSymbolStats, setPerSymbolStats] = useState<PerSymbolStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState(0);
@@ -82,10 +88,10 @@ export function useBotApi(pollMs = 5000): BotData {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [s, p, h, sig, acc, eq, hl, rk, br, ss] = await Promise.allSettled([
+      const [s, p, h, sig, acc, eq, hl, rk, br, ss, pss] = await Promise.allSettled([
         getJson<BotStats>('/api/status'),
         getJson<OpenPosition[]>('/api/positions'),
-        getJson<ClosedTrade[]>('/api/history?limit=100'),
+        getJson<ClosedTrade[]>('/api/history?limit=200'),
         getJson<Signal[]>('/api/signals'),
         getJson<AlpacaAccount>('/api/account'),
         getJson<EquityPoint[]>('/api/equity'),
@@ -93,7 +99,9 @@ export function useBotApi(pollMs = 5000): BotData {
         getJson<RiskSettings>('/api/risk'),
         getJson<BreakerStatus>('/api/breaker'),
         getJson<ScanStats>('/api/scan-stats'),
+        getJson<PerSymbolStats>('/api/per-symbol-stats'),
       ]);
+
       if (s.status === 'fulfilled') setStats(s.value);
       if (p.status === 'fulfilled') setPositions(Array.isArray(p.value) ? p.value : []);
       if (h.status === 'fulfilled') setHistory(Array.isArray(h.value) ? h.value : []);
@@ -104,6 +112,8 @@ export function useBotApi(pollMs = 5000): BotData {
       if (rk.status === 'fulfilled') setRisk(rk.value);
       if (br.status === 'fulfilled') setBreaker(br.value);
       if (ss.status === 'fulfilled') setScanStats(ss.value);
+      if (pss.status === 'fulfilled') setPerSymbolStats(pss.value);
+
       const anyOk = [s, p, h, sig, acc, eq, hl].some((r) => r.status === 'fulfilled');
       setError(anyOk ? null : 'Cannot reach the trading bot service.');
       setLastUpdated(Date.now());
@@ -117,26 +127,27 @@ export function useBotApi(pollMs = 5000): BotData {
   const fetchLogs = useCallback(async () => {
     try {
       const data = await getJson<{ entries: LogEntry[]; ts: number }>(
-        `/api/logs?since=${lastLogTs.current}&limit=100`,
+        `/api/logs?since=${lastLogTs.current}&limit=150`,
       );
       if (data.entries.length > 0) {
         lastLogTs.current = data.ts;
         const newestFirst = [...data.entries].sort((a, b) => b.ts - a.ts);
-        setLogs((prev) => [...newestFirst, ...prev].slice(0, 300));
+        setLogs((prev) => [...newestFirst, ...prev].slice(0, 400));
       }
-    } catch { /* ignore */ }
+    } catch { /* silent — logs are non-critical */ }
   }, []);
 
   useEffect(() => {
     fetchAll();
     fetchLogs();
     const t1 = setInterval(fetchAll, pollMs);
-    const t2 = setInterval(fetchLogs, 4000);
+    const t2 = setInterval(fetchLogs, 3500);
     return () => { clearInterval(t1); clearInterval(t2); };
   }, [fetchAll, fetchLogs, pollMs]);
 
   return {
-    stats, positions, history, signals, account, equity, health, logs, risk, breaker, scanStats,
+    stats, positions, history, signals, account, equity, health,
+    logs, risk, breaker, scanStats, perSymbolStats,
     loading, error, lastUpdated, refresh: fetchAll,
   };
 }
