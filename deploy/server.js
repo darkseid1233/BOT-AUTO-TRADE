@@ -125,6 +125,7 @@ api.get('/news', (req, res) => {
 api.get('/scan-stats', (_req, res) => res.json(service.getScanStats()));
 api.get('/per-symbol-stats', (_req, res) => res.json(service.getPerSymbolStats()));
 api.get('/health', (_req, res) => res.json({ ok: true }));
+api.get('/ping', (_req, res) => res.json({ ok: true, ts: Date.now(), version: '2.0' }));
 
 app.use('/trader-service/api', api);
 

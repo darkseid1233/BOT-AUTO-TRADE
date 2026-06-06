@@ -53,14 +53,36 @@ export class AlpacaClient {
    * @returns true when the account responds OK
    */
   async testConnection(): Promise<{ ok: boolean; message: string }> {
-    if (!this.hasCredentials) return { ok: false, message: 'no credentials set' };
+    if (!this.hasCredentials) return { ok: false, message: 'No credentials set' };
+    // Detect obvious key format mistakes before hitting the API
+    if (this.isPaper && this.keyId.startsWith('AK')) {
+      return { ok: false, message: 'You selected Paper Trading but entered a LIVE key (starts with AK). Use Paper Trading keys from alpaca.markets → Paper Trading → API Keys.' };
+    }
+    if (!this.isPaper && this.keyId.startsWith('PK')) {
+      return { ok: false, message: 'You selected Live Trading but entered a PAPER key (starts with PK). Switch to Paper (Demo) mode or use your live API keys.' };
+    }
     try {
-      const res = await fetch(`${this.tradingBase}/v2/account`, { headers: this.headers() });
-      if (!res.ok) return { ok: false, message: `${res.status} ${res.statusText}` };
+      const res = await fetch(`${this.tradingBase}/v2/account`, {
+        headers: this.headers(),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        let body = '';
+        try { body = await res.text(); } catch { /* ignore */ }
+        const alpacaMsg = body ? ` — ${body.slice(0, 200)}` : '';
+        if (res.status === 403 || res.status === 401) {
+          return { ok: false, message: `Invalid API keys (${res.status})${alpacaMsg}. Double-check your Key ID and Secret in alpaca.markets → Paper Trading → API Keys.` };
+        }
+        return { ok: false, message: `Alpaca API error ${res.status} ${res.statusText}${alpacaMsg}` };
+      }
       const a = (await res.json()) as Record<string, string>;
-      return { ok: true, message: `connected — account ${a.account_number ?? ''} (${a.status ?? 'OK'})` };
+      return { ok: true, message: `Connected — account ${a.account_number ?? ''} (${a.status ?? 'OK'})` };
     } catch (e) {
-      return { ok: false, message: (e as Error).message };
+      const msg = (e as Error).message;
+      if (msg.includes('fetch') || msg.includes('network') || msg.includes('timeout')) {
+        return { ok: false, message: `Network error reaching Alpaca: ${msg}. Check your internet connection.` };
+      }
+      return { ok: false, message: msg };
     }
   }
 
