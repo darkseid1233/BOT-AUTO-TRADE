@@ -31,6 +31,18 @@ export type Signal = {
     rsi: number; sma: number; atr: number; momentum: number;
     adx?: number; macdHistogram?: number; stochRsi?: number;
     bollingerPct?: number; volRatio?: number;
+    /** Supertrend value (ATR-based trailing line) */
+    supertrend?: number;
+    /** Supertrend direction — 'up' (uptrend) or 'down' (downtrend) */
+    supertrendDir?: 'up' | 'down';
+    /** Rolling VWAP value */
+    vwap?: number;
+    /** Distance of price from VWAP as percentage */
+    vwapDistPct?: number;
+    /** RSI/MACD divergence type if detected */
+    divergence?: string;
+    /** Candlestick pattern name if detected */
+    candlePattern?: string;
   };
   timestamp: number;
 };

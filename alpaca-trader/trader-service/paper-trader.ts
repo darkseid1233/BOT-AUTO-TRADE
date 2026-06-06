@@ -483,15 +483,14 @@ export class PaperTrader {
       s.reasons[t.reason] = (s.reasons[t.reason] ?? 0) + 1;
     }
     for (const s of Object.values(map)) {
-      const sym = s as any;
-      sym.winRate = sym.trades ? (sym.wins / sym.trades) * 100 : 0;
-      sym.avgWin = sym.wins ? sym.avgWin / sym.wins : 0;
-      sym.avgLoss = (sym.trades - sym.wins) ? sym.avgLoss / (sym.trades - sym.wins) : 0;
-      sym.avgDurationMs = sym.trades ? sym.avgDurationMs / sym.trades : 0;
-      if (sym.bestTrade === -Infinity) sym.bestTrade = 0;
-      if (sym.worstTrade === Infinity) sym.worstTrade = 0;
+      s.winRate = s.trades ? (s.wins / s.trades) * 100 : 0;
+      s.avgWin = s.wins ? s.avgWin / s.wins : 0;
+      s.avgLoss = (s.trades - s.wins) ? s.avgLoss / (s.trades - s.wins) : 0;
+      s.avgDurationMs = s.trades ? s.avgDurationMs / s.trades : 0;
+      if (s.bestTrade === -Infinity) s.bestTrade = 0;
+      if (s.worstTrade === Infinity) s.worstTrade = 0;
     }
-    return map as any;
+    return map;
   }
 
   getStats(): BotStats {

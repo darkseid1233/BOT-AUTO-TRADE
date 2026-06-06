@@ -10,6 +10,7 @@
  */
 
 import { initDb, dbInsert, dbLoadAll } from './journal-db.js';
+import { log } from './logger.js';
 
 export type JournalEntry = {
   id: string;
@@ -59,7 +60,6 @@ const entries: JournalEntry[] = [];
       const saved = dbLoadAll();
       entries.push(...saved);
       if (saved.length > 0) {
-        const { log } = require('./logger.js');
         log.info(`[journal] loaded ${saved.length} trades from SQLite`);
       }
     }
