@@ -73,12 +73,9 @@ export function run() {
   app.post('/api/breaker/resume', async (_req, res) => {
     try { res.json(await service.resumeBreaker()); } catch (e) { res.status(500).json({ error: (e as Error).message }); }
   });
-  app.get('/api/news', async (_req, res) => {
-    const { getLatestNews } = await import('./news-engine.js');
-    res.json(getLatestNews(20));
-  });
-  app.get('/api/scan-stats', (_req, res) => res.json(service.getScanStats()));
+  // NOTE: duplicate /api/news removed — only one handler kept.
   app.get('/api/news', (req, res) => { const limit = Number(req.query.limit) || 20; res.json(service.getNews(limit)); });
+  app.get('/api/scan-stats', (_req, res) => res.json(service.getScanStats()));
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
   const server = app.listen(port, () => { log.info(`🚀 trader-service ready on http://localhost:${port}`); });

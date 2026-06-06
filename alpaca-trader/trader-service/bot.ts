@@ -11,7 +11,8 @@
  */
 import { log } from './logger.js';
 import { AlpacaClient } from './alpaca-client.js';
-import { SignalEngine } from './signal-engine.js';
+// SignalEngine class removed — bot.ts uses generateSignal() directly.
+import { generateSignal, generateSignals } from './signal-engine.js';
 import { PaperTrader } from './paper-trader.js';
 import { checkSession } from './session-filter.js';
 import {
@@ -51,7 +52,7 @@ function combineMultipliers(...vals: number[]): number {
 
 export class TradingBot {
   readonly client    = new AlpacaClient();
-  readonly engine    = new SignalEngine(this.client);
+  // engine removed — generateSignal() is called directly (see processSymbol).
   readonly trader    = new PaperTrader(this.client);
   readonly watchlist = parseWatchlist();
 
@@ -254,7 +255,7 @@ export class TradingBot {
     breakerMult: number,
     fgResult: Awaited<ReturnType<typeof getMarketSentiment>> | null,
   ): Promise<'opened' | 'neutral'> {
-    const signal = await this.engine.generateSignals([symbol]).then((s) => s[0]);
+    const signal = await generateSignal(symbol, this.client);
     this.lastSignals.set(symbol, signal);
 
     if (signal.side === 'NEUTRAL') {

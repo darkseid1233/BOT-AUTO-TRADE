@@ -350,10 +350,12 @@ export class PaperTrader {
     this.balance += pnl;
     pos.qtyRemaining -= qtyToClose;
     pos.notional = pos.qtyRemaining * pos.markPrice;
-    // Mirror partial close to Alpaca (no-op in demo mode)
-    this.client
-      .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
-      .catch((e) => log.warn(`[trader] partial mirror ${pos.symbol} ${tag}: ${(e as Error).message}`));
+    // Mirror partial close only when explicitly enabled.
+    if (process.env.ENABLE_MIRROR === 'true') {
+      this.client
+        .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
+        .catch((e) => log.debug(`[trader] partial mirror ${pos.symbol} ${tag}: ${(e as Error).message}`));
+    }
   }
 
   private checkDailyStop(limitPct: number): boolean {
@@ -407,9 +409,11 @@ export class PaperTrader {
     this.balance += realizedPnl;
     pos.qtyRemaining = 0;
 
-    this.client
-      .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
-      .catch((e) => log.warn(`[trader] mirror close failed ${pos.symbol}: ${(e as Error).message}`));
+    if (process.env.ENABLE_MIRROR === 'true') {
+      this.client
+        .placeMarketOrder(pos.symbol, pos.side === 'LONG' ? 'sell' : 'buy', Number(qtyToClose.toFixed(6)))
+        .catch((e) => log.debug(`[trader] mirror close ${pos.symbol}: ${(e as Error).message}`));
+    }
 
     const trade: ClosedTrade = {
       id: pos.id,

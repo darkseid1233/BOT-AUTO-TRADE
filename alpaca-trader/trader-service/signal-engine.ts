@@ -45,6 +45,21 @@ import { recordGate, gateFromReason } from './scan-stats.js';
  * @param btcStateOverride pre-fetched BTC state (avoids one fetch per symbol)
  * @returns Signal (NEUTRAL when any gate rejects)
  */
+/**
+ * Thin wrapper so the bot can call generateSignals([...]) for one or more symbols
+ * without importing the raw generateSignal per-symbol function.
+ * @param symbols list of symbols to generate signals for
+ * @param client AlpacaClient instance
+ * @param btcStateOverride optional pre-fetched BTC state
+ */
+export async function generateSignals(
+  symbols: string[],
+  client: AlpacaClient,
+  btcStateOverride?: BtcState,
+): Promise<Signal[]> {
+  return Promise.all(symbols.map((s) => generateSignal(s, client, btcStateOverride)));
+}
+
 export async function generateSignal(
   symbol: string,
   client: AlpacaClient,
