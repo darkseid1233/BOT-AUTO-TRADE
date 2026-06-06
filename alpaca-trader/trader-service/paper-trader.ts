@@ -456,6 +456,44 @@ export class PaperTrader {
     return this.balance + unreal;
   }
 
+  /**
+   * Per-symbol performance breakdown — used by dashboard analytics panel.
+   * Inspired by Freqtrade's `enter_tag_performance` and `exit_reason_performance`.
+   */
+  getPerSymbolStats(): Record<string, {
+    trades: number; wins: number; winRate: number;
+    totalPnl: number; avgWin: number; avgLoss: number;
+    bestTrade: number; worstTrade: number;
+    avgDurationMs: number; reasons: Record<string, number>;
+  }> {
+    const map: Record<string, typeof ({})[string]> = {};
+    for (const t of this.history) {
+      if (!map[t.symbol]) {
+        map[t.symbol] = { trades: 0, wins: 0, winRate: 0, totalPnl: 0, avgWin: 0, avgLoss: 0,
+          bestTrade: -Infinity, worstTrade: Infinity, avgDurationMs: 0, reasons: {} };
+      }
+      const s = map[t.symbol];
+      s.trades++;
+      s.totalPnl += t.realizedPnl;
+      if (t.realizedPnl > 0) { s.wins++; s.avgWin += t.realizedPnl; }
+      else { s.avgLoss += Math.abs(t.realizedPnl); }
+      if (t.realizedPnl > s.bestTrade) s.bestTrade = t.realizedPnl;
+      if (t.realizedPnl < s.worstTrade) s.worstTrade = t.realizedPnl;
+      s.avgDurationMs += (t.closedAt - t.openedAt);
+      s.reasons[t.reason] = (s.reasons[t.reason] ?? 0) + 1;
+    }
+    for (const s of Object.values(map)) {
+      const sym = s as any;
+      sym.winRate = sym.trades ? (sym.wins / sym.trades) * 100 : 0;
+      sym.avgWin = sym.wins ? sym.avgWin / sym.wins : 0;
+      sym.avgLoss = (sym.trades - sym.wins) ? sym.avgLoss / (sym.trades - sym.wins) : 0;
+      sym.avgDurationMs = sym.trades ? sym.avgDurationMs / sym.trades : 0;
+      if (sym.bestTrade === -Infinity) sym.bestTrade = 0;
+      if (sym.worstTrade === Infinity) sym.worstTrade = 0;
+    }
+    return map as any;
+  }
+
   getStats(): BotStats {
     const wins = this.history.filter((t) => t.realizedPnl > 0);
     const losses = this.history.filter((t) => t.realizedPnl <= 0);

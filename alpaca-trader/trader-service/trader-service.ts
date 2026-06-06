@@ -61,6 +61,7 @@ export class TraderService {
 
   /** Per-gate rejection histogram (cumulative + last scan) for the dashboard. */
   getScanStats() { return getScanStats(); }
+  getPerSymbolStats() { return this.bot.trader.getPerSymbolStats(); }
 
   /** Latest crypto news items (keyword-sentiment scored). */
   getNews(limit = 20): NewsItem[] { return getLatestNews(limit); }

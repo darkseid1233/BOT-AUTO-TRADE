@@ -37,6 +37,10 @@ import type { AlpacaClient } from './alpaca-client.js';
 import type { Signal } from './types.js';
 import { log } from './logger.js';
 import { recordGate, gateFromReason } from './scan-stats.js';
+import { supertrend } from './supertrend.js';
+import { vwap, vwapSignalStrength } from './vwap.js';
+import { detectDivergence, divergenceConfirms } from './divergence.js';
+import { detectCandlestickPatterns, patternConfirmation } from './candlestick-patterns.js';
 
 /**
  * Generate a Signal for one symbol using the v4 regime-first engine.
@@ -140,6 +144,15 @@ export async function generateSignal(
   const volRegime = getVolatilityRegime(bars.map((b) => b.high), bars.map((b) => b.low), closes);
   const smc = analyzeSmartMoney(bars.slice(-60).map((b) => ({ ...b })));
 
+  // ── NEW: Supertrend, VWAP, Divergence, Candlestick Patterns ─────────────
+  const stResult = supertrend(bars, 10, 3.0);
+  const vwapResult = vwap(bars as any, 96);
+  const divResult = detectDivergence(bars, 50);
+  const patternResult = detectCandlestickPatterns(bars.slice(-10) as any);
+  const supertrendAligned = (side === 'LONG' && stResult.direction === 'up') ||
+                            (side === 'SHORT' && stResult.direction === 'down');
+  log.debug(`[signal-v4] ${symbol} ST=${stResult.direction}(${supertrendAligned ? '✓' : '✗'}) VWAP=${vwapResult.priceAbove ? 'above' : 'below'}(${vwapResult.distancePct.toFixed(2)}%) DIV=${divResult.rsi.type ?? 'none'} PAT=${patternResult.best ?? 'none'}`);
+
   const emaStackAligned =
     side === 'LONG' ? ema20 > ema50 && ema50 > ema200 : ema20 < ema50 && ema50 < ema200;
 
@@ -179,13 +192,26 @@ export async function generateSignal(
     return neutralSignal(symbol, price, [`Net R:R ${netRR.toFixed(2)} < ${cfg.minRiskReward} (ATR too small)`]);
   }
 
-  log.info(`[signal-v4] ${symbol} ${side} quality=${quality.score} regime=${regime.regime} ADX=${regime.adx.toFixed(1)} CHOP=${regime.chop.toFixed(1)} vol=${volRatio.toFixed(1)}x BTC=${btc.direction} HTF=${htf.trend} netRR=${netRR.toFixed(2)}`);
+  // ── New indicator bonus: adjust quality post-gate ─────────────────────────
+  // Each new module can add up to +5 points to the raw quality score.
+  // Cap at 100 to avoid inflating scores unrealistically.
+  let qualityBonus = 0;
+  if (supertrendAligned) qualityBonus += 3;           // Supertrend confirms direction
+  if (vwapSignalStrength(side, vwapResult) > 0.7) qualityBonus += 2; // VWAP aligned
+  if (divergenceConfirms(side, divResult)) qualityBonus += 4;        // Divergence detected
+  if (patternConfirmation(side, patternResult) > 0.7) qualityBonus += 3; // Pattern match
+  const adjustedScore = Math.min(100, quality.score + qualityBonus);
+  if (qualityBonus > 0) {
+    log.debug(`[signal-v4] ${symbol} quality bonus +${qualityBonus} → ${adjustedScore} (ST:${supertrendAligned} VWAP:${vwapSignalStrength(side, vwapResult).toFixed(1)} DIV:${divResult.rsi.type ?? '-'} PAT:${patternResult.best ?? '-'})`);
+  }
+
+  log.info(`[signal-v4] ${symbol} ${side} quality=${adjustedScore} regime=${regime.regime} ADX=${regime.adx.toFixed(1)} CHOP=${regime.chop.toFixed(1)} vol=${volRatio.toFixed(1)}x BTC=${btc.direction} HTF=${htf.trend} netRR=${netRR.toFixed(2)}`);
 
   return {
     symbol,
     side,
-    confidence: quality.score,
-    qualityScore: quality.score,
+    confidence: adjustedScore,
+    qualityScore: adjustedScore,
     qualityFactors: quality.factors,
     price,
     entry,
@@ -200,11 +226,19 @@ export async function generateSignal(
     smcBear: smc.smcScore.bear,
     btcState: btc.direction,
     trend1h: htf.trend,
+    // Extended indicators including new modules
     indicators: {
       rsi: round(rsiVal), ema20: round(ema20, 4), ema50: round(ema50, 4), ema200: round(ema200, 4),
       sma: round(smaVal, 4), atr: round(atrVal, 4), momentum: 0, adx: round(regime.adx),
       macdHistogram: round(macdData.histogram, 4), stochRsi: round(srsi),
       bollingerPct: round(bbands.pct, 3), volRatio: round(volRatio),
+      // ── New indicators from top-bot research ──
+      supertrend: round(stResult.value, 4),
+      supertrendDir: stResult.direction,
+      vwap: round(vwapResult.vwap, 4),
+      vwapDistPct: round(vwapResult.distancePct),
+      divergence: divResult.rsi.type ?? undefined,
+      candlePattern: patternResult.best ?? undefined,
     },
     timestamp: Date.now(),
   };

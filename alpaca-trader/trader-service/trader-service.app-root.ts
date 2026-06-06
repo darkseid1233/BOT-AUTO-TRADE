@@ -76,6 +76,7 @@ export function run() {
   // NOTE: duplicate /api/news removed — only one handler kept.
   app.get('/api/news', (req, res) => { const limit = Number(req.query.limit) || 20; res.json(service.getNews(limit)); });
   app.get('/api/scan-stats', (_req, res) => res.json(service.getScanStats()));
+  app.get('/api/per-symbol-stats', (_req, res) => res.json(service.getPerSymbolStats()));
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
   const server = app.listen(port, () => { log.info(`🚀 trader-service ready on http://localhost:${port}`); });
