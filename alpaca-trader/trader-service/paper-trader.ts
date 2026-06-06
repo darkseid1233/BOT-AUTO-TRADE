@@ -466,7 +466,7 @@ export class PaperTrader {
     bestTrade: number; worstTrade: number;
     avgDurationMs: number; reasons: Record<string, number>;
   }> {
-    const map: Record<string, typeof ({})[string]> = {};
+    const map: Record<string, { trades: number; wins: number; winRate: number; totalPnl: number; avgWin: number; avgLoss: number; bestTrade: number; worstTrade: number; avgDurationMs: number; reasons: Record<string, number> }> = {};
     for (const t of this.history) {
       if (!map[t.symbol]) {
         map[t.symbol] = { trades: 0, wins: 0, winRate: 0, totalPnl: 0, avgWin: 0, avgLoss: 0,
