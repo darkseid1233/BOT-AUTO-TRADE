@@ -370,6 +370,133 @@
 .riskSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent2); cursor: pointer; }
 
 /* ── Connect Modal ───────────────────────────────────────────────────────── */
+
+/* fieldGroup / fieldLabel used in connect-modal */
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fieldLabel {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+/* generic text/password input */
+.input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+.input:focus { border-color: var(--accent2); }
+.input::placeholder { color: var(--muted); opacity: 0.6; }
+
+/* seg toggle row */
+.toggleRow {
+  display: flex;
+  gap: 8px;
+}
+.segBtn {
+  flex: 1;
+  padding: 8px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.segBtn:hover { border-color: var(--accent2); color: var(--text); }
+.segActive {
+  background: rgba(91,127,255,0.15);
+  border-color: var(--accent2);
+  color: var(--accent2);
+}
+.segActiveDanger {
+  background: rgba(255,84,112,0.15);
+  border-color: var(--loss);
+  color: var(--loss);
+}
+
+/* info/warn/ok boxes */
+.warnBox {
+  padding: 10px 13px;
+  background: rgba(255,167,51,0.1);
+  border: 1px solid rgba(255,167,51,0.3);
+  border-radius: 8px;
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.okBox {
+  padding: 10px 13px;
+  background: rgba(22,211,154,0.1);
+  border: 1px solid rgba(22,211,154,0.3);
+  border-radius: 8px;
+  color: var(--win);
+  font-size: 12px;
+}
+
+/* modal layout classes */
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.modalBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 24px 24px;
+}
+.modalHint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0;
+}
+.modalClose {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+.modalClose:hover { color: var(--text); }
+.modalActions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.code {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: var(--accent2);
+}
+
 .modalOverlay {
   position: fixed; inset: 0;
   background: rgba(7,9,16,0.85);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { connectAlpaca, disconnectAlpaca } from './use-bot-api.js';
 import type { ConnectionStatus } from './types.js';
 import styles from './trader-dashboard.module.css';
@@ -28,13 +28,32 @@ export function ConnectModal({
   const [paper, setPaper] = useState(true);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ConnectionStatus | null>(null);
+  const [validErr, setValidErr] = useState<string | null>(null);
+
+  const keyRef = useRef<HTMLInputElement>(null);
+  const secretRef = useRef<HTMLInputElement>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setValidErr(null);
+    const trimKey = keyId.trim();
+    const trimSecret = secret.trim();
+
+    if (!trimKey) {
+      setValidErr('API Key ID is required');
+      keyRef.current?.focus();
+      return;
+    }
+    if (!trimSecret) {
+      setValidErr('API Secret Key is required');
+      secretRef.current?.focus();
+      return;
+    }
+
     setBusy(true);
     setResult(null);
     try {
-      const res = await connectAlpaca({ keyId: keyId.trim(), secret: secret.trim(), paper });
+      const res = await connectAlpaca({ keyId: trimKey, secret: trimSecret, paper });
       setResult(res);
       if (res.connected) {
         setKeyId('');
@@ -64,41 +83,47 @@ export function ConnectModal({
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHeader}>
           <span className={styles.cardTitle}>🔑 Connect Alpaca Account</span>
-          <button className={styles.modalClose} onClick={onClose}>✕</button>
+          <button className={styles.modalClose} onClick={onClose} type="button">✕</button>
         </div>
 
-        <form className={styles.modalBody} onSubmit={submit}>
+        {/* noValidate disables browser-native HTML5 validation bubbles */}
+        <form className={styles.modalBody} onSubmit={submit} noValidate>
           <p className={styles.modalHint}>
             Paste your Alpaca API keys to connect your portfolio. Use{' '}
             <strong>Paper Trading</strong> keys for the demo account — no real money is used.
             Get keys at <span className={styles.code}>alpaca.markets → Paper Trading → API Keys</span>.
           </p>
 
-          <label className={styles.field}>
-            <span className={styles.fieldLabel}>API Key ID</span>
+          <div className={styles.fieldGroup}>
+            <label htmlFor="cm-keyid" className={styles.fieldLabel}>API Key ID</label>
             <input
+              id="cm-keyid"
+              ref={keyRef}
               className={styles.input}
               type="text"
               value={keyId}
-              onChange={(e) => setKeyId(e.target.value)}
-              placeholder="PK..."
+              onChange={(e) => { setKeyId(e.target.value); setValidErr(null); }}
+              placeholder="PKXXXXXXXXXXXXXXXXXXXXXXXX"
               autoComplete="off"
-              required
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="none"
             />
-          </label>
+          </div>
 
-          <label className={styles.field}>
-            <span className={styles.fieldLabel}>API Secret Key</span>
+          <div className={styles.fieldGroup}>
+            <label htmlFor="cm-secret" className={styles.fieldLabel}>API Secret Key</label>
             <input
+              id="cm-secret"
+              ref={secretRef}
               className={styles.input}
               type="password"
               value={secret}
-              onChange={(e) => setSecret(e.target.value)}
+              onChange={(e) => { setSecret(e.target.value); setValidErr(null); }}
               placeholder="••••••••••••••••"
-              autoComplete="off"
-              required
+              autoComplete="new-password"
             />
-          </label>
+          </div>
 
           <div className={styles.toggleRow}>
             <button
@@ -121,6 +146,10 @@ export function ConnectModal({
             <div className={styles.warnBox}>
               ⚠️ Live mode places <strong>real orders</strong> with real money. Make sure you understand the risk.
             </div>
+          )}
+
+          {validErr && (
+            <div className={styles.warnBox}>❗ {validErr}</div>
           )}
 
           {result && (
