@@ -45,7 +45,7 @@ export function TraderDashboard() {
   } = useBotApi(5000);
 
   const doClose = useCallback(async (symbol: string) => {
-    try { await postJson('/api/close', { symbol }); refresh(); } catch { /* silent */ }
+    try { await postJson(`/api/control/close/${encodeURIComponent(symbol)}`); refresh(); } catch { /* silent */ }
   }, [refresh]);
 
   const doAction = useCallback(async (path: string, label: string) => {

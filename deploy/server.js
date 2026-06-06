@@ -123,6 +123,7 @@ api.get('/news', (req, res) => {
   res.json(service.getNews(limit));
 });
 api.get('/scan-stats', (_req, res) => res.json(service.getScanStats()));
+api.get('/per-symbol-stats', (_req, res) => res.json(service.getPerSymbolStats()));
 api.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use('/trader-service/api', api);

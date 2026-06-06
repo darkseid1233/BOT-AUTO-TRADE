@@ -13,6 +13,7 @@ import { log } from './logger.js';
 import { AlpacaClient } from './alpaca-client.js';
 // SignalEngine class removed — bot.ts uses generateSignal() directly.
 import { generateSignal, generateSignals } from './signal-engine.js';
+import { analyzeBtcState } from './btc-state.js';
 import { PaperTrader } from './paper-trader.js';
 import { checkSession } from './session-filter.js';
 import {
@@ -231,12 +232,15 @@ export class TradingBot {
       log.info(`[scan] F&G=${fgResult.fearGreed?.value ?? '?'} — ${fgResult.reason}`);
     }
 
+    // ── Fetch BTC state ONCE and share across all symbols (avoids N redundant calls) ─
+    const btcState = await analyzeBtcState(this.client).catch(() => undefined);
+
     // ── Scan each symbol ─────────────────────────────────────────────────────
     let opened = 0;
     let neutralCount = 0;
     for (const symbol of this.watchlist) {
       try {
-        const result = await this.processSymbol(symbol, breaker.riskMultiplier, fgResult);
+        const result = await this.processSymbol(symbol, breaker.riskMultiplier, fgResult, btcState);
         if (result === 'opened') opened++; else neutralCount++;
       } catch (e) {
         log.error(`[scan] ${symbol}: ${(e as Error).message}`);
@@ -254,8 +258,9 @@ export class TradingBot {
     symbol: string,
     breakerMult: number,
     fgResult: Awaited<ReturnType<typeof getMarketSentiment>> | null,
+    btcState?: Awaited<ReturnType<typeof analyzeBtcState>>,
   ): Promise<'opened' | 'neutral'> {
-    const signal = await generateSignal(symbol, this.client);
+    const signal = await generateSignal(symbol, this.client, btcState);
     this.lastSignals.set(symbol, signal);
 
     if (signal.side === 'NEUTRAL') {

@@ -3,8 +3,10 @@ import styles from './trader-dashboard.module.css';
 
 type ConnectResult = { connected: boolean; paper?: boolean; message: string };
 
+const API_BASE = '/trader-service';
+
 async function apiPost(path: string, body?: unknown): Promise<ConnectResult> {
-  const res = await fetch(path, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
