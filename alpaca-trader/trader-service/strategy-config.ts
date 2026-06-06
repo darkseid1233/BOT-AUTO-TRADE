@@ -93,14 +93,21 @@ export type StrategyConfig = {
 /** Default config — quality-first, anti-ranging. Mirrors bcj2023 strict pillar. */
 export function getStrategyConfig(): StrategyConfig {
   return {
-    minSignalQuality:   readNumberEnv('MIN_SIGNAL_QUALITY', 70),
-    adxTrendThreshold:  readNumberEnv('ADX_TREND_THRESHOLD', 22),
-    adxStrongThreshold: readNumberEnv('ADX_STRONG_THRESHOLD', 30),
-    emaTrendSpreadPct:  readNumberEnv('EMA_TREND_SPREAD_PCT', 0.1),
+    // ── RELAXED defaults for current oversold market (F&G=12, RSI 17-22, ADX 18).
+    // All thresholds are still env-overridable — tighten them back when market recovers.
+    // RSI_LATE_ENTRY_GUARD=80 → SHORT blocked only when RSI < 20 (was < 28 at 72).
+    // ADX_TREND_THRESHOLD=18  → BTC 18.4 now passes regime (was 22, blocked all).
+    // MIN_VOLUME_RATIO=0.35   → catches most assets (LTC/LINK still low at 0.12x).
+    // MIN_SIGNAL_QUALITY=58   → allows good-but-not-perfect signals in bear conditions.
+    // FG_EXTREME_FEAR handled in fear-greed.ts separately (lowered to 15).
+    minSignalQuality:   readNumberEnv('MIN_SIGNAL_QUALITY', 58),
+    adxTrendThreshold:  readNumberEnv('ADX_TREND_THRESHOLD', 18),
+    adxStrongThreshold: readNumberEnv('ADX_STRONG_THRESHOLD', 28),
+    emaTrendSpreadPct:  readNumberEnv('EMA_TREND_SPREAD_PCT', 0.05),
     chopRangingThreshold: readNumberEnv('CHOP_RANGING_THRESHOLD', 61.8),
-    minVolumeRatio:     readNumberEnv('MIN_VOLUME_RATIO', 0.8),
-    minRiskReward:      readNumberEnv('MIN_RR_NET', 1.8),
-    rsiLateEntryGuard:  readNumberEnv('RSI_LATE_ENTRY_GUARD', 72),
+    minVolumeRatio:     readNumberEnv('MIN_VOLUME_RATIO', 0.35),
+    minRiskReward:      readNumberEnv('MIN_RR_NET', 1.5),
+    rsiLateEntryGuard:  readNumberEnv('RSI_LATE_ENTRY_GUARD', 80),
     extremeVolRatio:    readNumberEnv('EXTREME_VOL_RATIO', 2.5),
 
     atrSlMult:          readNumberEnv('ATR_SL_MULTIPLIER', 1.8),
@@ -138,13 +145,14 @@ export type CoinTuning = {
 };
 
 export const COIN_TUNING: Record<string, CoinTuning> = {
-  'BTC/USD':   { minSignalQuality: 72, note: 'mega cap — quality > quantity' },
-  'ETH/USD':   { minSignalQuality: 72, note: 'mega cap — quality > quantity' },
+  // Per-coin quality overrides relaxed slightly for bear/oversold conditions.
+  'BTC/USD':   { minSignalQuality: 62, note: 'mega cap — quality > quantity' },
+  'ETH/USD':   { minSignalQuality: 62, note: 'mega cap — quality > quantity' },
   'SOL/USD':   { note: 'standard params' },
   'LINK/USD':  { note: 'standard params' },
   'LTC/USD':   { note: 'standard params' },
   'AVAX/USD':  { sizeMultiplier: 0.8, note: 'L1 moderate vol' },
-  'DOGE/USD':  { sizeMultiplier: 0.5, minSignalQuality: 75, note: 'meme — half size' },
+  'DOGE/USD':  { sizeMultiplier: 0.5, minSignalQuality: 62, note: 'meme — half size, quality lowered for bear conditions' },
   'POL/USD':   { sizeMultiplier: 0.8, note: 'ex-MATIC, moderate vol' },
   'UNI/USD':   { sizeMultiplier: 0.8, note: 'DeFi blue chip, moderate vol' },
   'MATIC/USD': { skip: true, note: 'DELISTED on Alpaca — migrated to POL' },

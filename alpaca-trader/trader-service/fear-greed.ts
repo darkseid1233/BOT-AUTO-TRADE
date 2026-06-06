@@ -80,9 +80,13 @@ export async function getFearGreed(): Promise<FearGreedData | null> {
 export async function getMarketSentiment(
   side?: 'LONG' | 'SHORT',
 ): Promise<MarketSentiment> {
-  const EXTREME_FEAR  = readEnv('FG_EXTREME_FEAR', 20);
+  // Lowered EXTREME_FEAR threshold from 20 → 10:
+  // At F&G=12 the market is capitulating — we still want SHORT setups.
+  // LONGs are only hard-blocked below 10 (true capitulation bottom).
+  // Shorts in oversold conditions get a risk multiplier reduction instead.
+  const EXTREME_FEAR  = readEnv('FG_EXTREME_FEAR', 10);
   const EXTREME_GREED = readEnv('FG_EXTREME_GREED', 80);
-  const FEAR_LEVEL    = readEnv('FG_FEAR', 35);
+  const FEAR_LEVEL    = readEnv('FG_FEAR', 30);
   const GREED_LEVEL   = readEnv('FG_GREED', 65);
 
   const fg = await getFearGreed();
