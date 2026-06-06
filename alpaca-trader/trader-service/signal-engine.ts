@@ -36,6 +36,7 @@ import { getStrategyConfig, getTuning } from './strategy-config.js';
 import type { AlpacaClient } from './alpaca-client.js';
 import type { Signal } from './types.js';
 import { log } from './logger.js';
+import { recordGate, gateFromReason } from './scan-stats.js';
 
 /**
  * Generate a Signal for one symbol using the v4 regime-first engine.
@@ -53,8 +54,15 @@ export async function generateSignal(
   const tuning = getTuning(symbol);
   const minQuality = Math.max(cfg.minSignalQuality, tuning.minSignalQuality ?? 0);
 
+  // Respect per-coin skip flag (e.g. delisted symbols) so we never trade on
+  // synthetic fallback data without the operator knowing.
+  if (tuning.skip) {
+    return neutralSignal(symbol, 0, [`${symbol} skipped — ${tuning.note ?? 'disabled in coin tuning'}`]);
+  }
+
   const bars = (await client.getCryptoBars(symbol, '15Min', 250)) as Bar[];
   if (bars.length < 205) {
+    recordGate('insufficientBars');
     return neutralSignal(symbol, bars[bars.length - 1]?.close ?? 0, ['Insufficient bars']);
   }
 
@@ -65,6 +73,7 @@ export async function generateSignal(
   // ── 1. Market Regime → allowed side ────────────────────────────────────────
   const regime = detectRegime(bars, cfg);
   if (regime.allowedSide === 'NEUTRAL') {
+    recordGate('regime');
     return neutralSignal(symbol, price, [regime.reason], snapshot(bars, regime.adx));
   }
   const side = regime.allowedSide;
@@ -72,15 +81,18 @@ export async function generateSignal(
   // ── 2. Volume Gate ─────────────────────────────────────────────────────────
   const volRatio = volumeRatio(volumes, 20);
   if (volRatio < cfg.minVolumeRatio) {
+    recordGate('volume');
     return neutralSignal(symbol, price, [`Volume ${volRatio.toFixed(2)}x < ${cfg.minVolumeRatio}`], snapshot(bars, regime.adx));
   }
 
   // ── 3. RSI late-entry guard ────────────────────────────────────────────────
   const rsiVal = regime.rsi;
   if (side === 'LONG' && rsiVal > cfg.rsiLateEntryGuard) {
+    recordGate('rsiLateEntry');
     return neutralSignal(symbol, price, [`RSI ${rsiVal.toFixed(0)} > ${cfg.rsiLateEntryGuard} — late LONG`], snapshot(bars, regime.adx));
   }
   if (side === 'SHORT' && rsiVal < 100 - cfg.rsiLateEntryGuard) {
+    recordGate('rsiLateEntry');
     return neutralSignal(symbol, price, [`RSI ${rsiVal.toFixed(0)} < ${100 - cfg.rsiLateEntryGuard} — late SHORT`], snapshot(bars, regime.adx));
   }
 
@@ -92,6 +104,7 @@ export async function generateSignal(
     (side === 'LONG' && btc.direction === 'bearish' && btc.strength === 'strong') ||
     (side === 'SHORT' && btc.direction === 'bullish' && btc.strength === 'strong');
   if (btcOpposesStrong) {
+    recordGate('btcOpposing');
     return neutralSignal(symbol, price, [`${btc.label} — strong opposing macro, ${side} blocked`], snapshot(bars, regime.adx));
   }
 
@@ -123,6 +136,7 @@ export async function generateSignal(
   });
 
   if (quality.score < minQuality) {
+    recordGate('quality');
     return neutralSignal(symbol, price,
       [`Signal Quality ${quality.score} < ${minQuality}${tuning.minSignalQuality ? ' (coin override)' : ''}`],
       snapshot(bars, regime.adx, { rsiVal, ema20, ema50, ema200, smaVal, atrVal, mom: 0, macdData, srsi, bbands, volRatio }));
@@ -146,6 +160,7 @@ export async function generateSignal(
   const netRisk = slDist + roundTripCost;
   const netRR = netRisk > 0 ? netReward / netRisk : 0;
   if (netRR < cfg.minRiskReward) {
+    recordGate('riskReward');
     return neutralSignal(symbol, price, [`Net R:R ${netRR.toFixed(2)} < ${cfg.minRiskReward} (ATR too small)`]);
   }
 

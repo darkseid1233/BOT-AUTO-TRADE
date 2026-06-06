@@ -36,6 +36,30 @@ export class PaperTrader {
   private dayStartEquity: number;
   private peakEquity: number;
   private risk = getRiskConfig();
+  /** Total fees + slippage paid across all closes (for transparency in stats). */
+  private totalCosts = 0;
+
+  /**
+   * Apply slippage to a fill price so paper execution matches reality.
+   * Exits always slip AGAINST the position (worse fill): a LONG sells lower,
+   * a SHORT buys higher. This removes the optimistic "perfect fill" bias that
+   * inflated win-rate vs the backtest (which already models costs).
+   * @param px the ideal fill price (SL/TP level)
+   * @param side position side
+   * @param exiting true for exits (slip against), false for entries
+   */
+  private slip(px: number, side: 'LONG' | 'SHORT', exiting: boolean): number {
+    const cfg = getStrategyConfig();
+    const s = cfg.slippagePct;
+    const longLike = exiting ? side === 'LONG' : side === 'SHORT';
+    // Exiting a LONG (sell) → worse = lower; exiting a SHORT (buy) → worse = higher.
+    return longLike ? px * (1 - s) : px * (1 + s);
+  }
+
+  /** Round-trip-aware taker fee on a given notional. */
+  private fee(notional: number): number {
+    return Math.abs(notional) * getStrategyConfig().takerFeePct;
+  }
 
   constructor(private client: AlpacaClient, startingBalance = DEFAULT_BALANCE) {
     this.startingBalance = startingBalance;
@@ -177,6 +201,11 @@ export class PaperTrader {
       log.warn(`[trader] mirror order failed ${signal.symbol}: ${(e as Error).message}`);
     }
 
+    // Entry taker fee — charged immediately so the cost model matches the backtest.
+    const entryFee = this.fee(qty * signal.entry);
+    this.balance -= entryFee;
+    this.totalCosts += entryFee;
+
     const maxLoss = qty * slDist;
     const notional = qty * signal.entry;
     log.info(
@@ -273,10 +302,14 @@ export class PaperTrader {
       const hitSl = isLong ? price <= pos.stopLoss : price >= pos.stopLoss;
       const hitTp = isLong ? price >= pos.takeProfit : price <= pos.takeProfit;
 
-      if (hitTp || hitSl) {
-        const fill = hitTp ? pos.takeProfit : pos.stopLoss;
-        const reason = hitTp ? 'TP' : (pos.trailingActive ? 'TRAILING' : 'SL');
-        closed.push(this.closeAt(pos, fill, reason));
+      // CONSERVATIVE FILL: if both SL and TP appear hit in the same tick (a wide
+      // candle / gap), assume the STOP filled first. The old code preferred TP,
+      // which optimistically inflated win-rate. Stop-first is the safe assumption.
+      if (hitSl) {
+        const reason = pos.trailingActive ? 'TRAILING' : 'SL';
+        closed.push(this.closeAt(pos, pos.stopLoss, reason));
+      } else if (hitTp) {
+        closed.push(this.closeAt(pos, pos.takeProfit, 'TP'));
       }
     }
 
@@ -302,7 +335,10 @@ export class PaperTrader {
     tag: string,
   ): void {
     const dir = pos.side === 'LONG' ? 1 : -1;
-    const pnl = (fillPx - pos.entryPrice) * qtyToClose * dir;
+    const realFill = this.slip(fillPx, pos.side, true);
+    const cost = this.fee(realFill * qtyToClose);
+    const pnl = (realFill - pos.entryPrice) * qtyToClose * dir - cost;
+    this.totalCosts += cost;
     this.balance += pnl;
     pos.qtyRemaining -= qtyToClose;
     pos.notional = pos.qtyRemaining * pos.markPrice;
@@ -355,7 +391,11 @@ export class PaperTrader {
     const dir = pos.side === 'LONG' ? 1 : -1;
     // Only close the REMAINING qty (earlier partial TPs reduced it)
     const qtyToClose = pos.qtyRemaining > 0 ? pos.qtyRemaining : pos.qty;
-    const realizedPnl = (price - pos.entryPrice) * qtyToClose * dir;
+    // Apply slippage (against the trade) + taker fee so paper matches backtest reality.
+    const realFill = this.slip(price, pos.side, true);
+    const cost = this.fee(realFill * qtyToClose);
+    const realizedPnl = (realFill - pos.entryPrice) * qtyToClose * dir - cost;
+    this.totalCosts += cost;
     this.balance += realizedPnl;
     pos.qtyRemaining = 0;
 
@@ -368,10 +408,10 @@ export class PaperTrader {
       symbol: pos.symbol,
       side: pos.side,
       entryPrice: pos.entryPrice,
-      closePrice: price,
+      closePrice: realFill,
       qty: pos.qty,           // original full qty for journaling
       realizedPnl,
-      pnlPercent: ((price - pos.entryPrice) / pos.entryPrice) * 100 * dir,
+      pnlPercent: ((realFill - pos.entryPrice) / pos.entryPrice) * 100 * dir,
       reason,
       openedAt: pos.openedAt,
       closedAt: Date.now(),
@@ -436,6 +476,7 @@ export class PaperTrader {
       avgLoss: losses.length ? grossLoss / losses.length : 0,
       expectancy: this.history.length ? totalPnl / this.history.length : 0,
       availableUSDT: this.balance, paused: this.paused,
+      totalCosts: this.totalCosts,
     };
   }
 }

@@ -111,6 +111,8 @@ export type BotStats = {
   expectancy: number;
   availableUSDT: number;
   paused: boolean;
+  /** Total fees + slippage paid across all trades (cost transparency). */
+  totalCosts: number;
 };
 
 export type EquityPoint = { ts: number; balance: number; };

@@ -33,7 +33,7 @@ export type NewsItem = {
 
 const BULLISH_KEYWORDS = ['rally', 'surge', 'bull', 'breakout', 'adoption', 'institutional', 'etf approved', 'upgrade'];
 const BEARISH_KEYWORDS = ['crash', 'dump', 'bear', 'hack', 'ban', 'regulation', 'sec', 'lawsuit', 'collapse', 'liquidation'];
-const CRYPTO_SYMBOLS   = ['BTC', 'ETH', 'SOL', 'AVAX', 'LINK', 'DOGE', 'MATIC', 'LTC', 'BNB', 'ADA'];
+const CRYPTO_SYMBOLS   = ['BTC', 'ETH', 'SOL', 'AVAX', 'LINK', 'DOGE', 'POL', 'UNI', 'LTC', 'BNB', 'ADA'];
 
 let cache: NewsItem[] = [];
 let lastRefresh = 0;

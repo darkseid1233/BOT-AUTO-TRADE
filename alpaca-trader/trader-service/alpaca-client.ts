@@ -136,16 +136,38 @@ export class AlpacaClient {
   ): Promise<{ open: number; high: number; low: number; close: number; volume: number; ts: number }[]> {
     if (this.hasCredentials) {
       try {
-        const url = new URL(`${this.dataBase}/v1beta3/crypto/us/bars`);
-        url.searchParams.set('symbols', symbol);
-        url.searchParams.set('timeframe', timeframe);
-        url.searchParams.set('limit', String(limit));
-        const res = await fetch(url, { headers: this.headers() });
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-        const data = (await res.json()) as { bars?: Record<string, Array<Record<string, number | string>>> };
-        const bars = data.bars?.[symbol] ?? [];
-        if (bars.length > 0) {
-          return bars.map((b) => ({
+        // CRITICAL FIX: Alpaca's crypto bars endpoint returns far fewer than `limit`
+        // bars when no `start` is supplied — which made every real symbol fail the
+        // "Insufficient bars" gate (>=205 bars required). We now request an explicit
+        // time window wide enough to cover `limit` bars (with a generous buffer for
+        // gaps/maintenance) and paginate with `next_page_token` until we have enough.
+        const barMs = timeframeMs(timeframe);
+        const startMs = Date.now() - Math.ceil(limit * 1.5) * barMs;
+        const all: Array<Record<string, number | string>> = [];
+        let pageToken: string | undefined;
+        let guard = 0;
+        do {
+          const url = new URL(`${this.dataBase}/v1beta3/crypto/us/bars`);
+          url.searchParams.set('symbols', symbol);
+          url.searchParams.set('timeframe', timeframe);
+          url.searchParams.set('start', new Date(startMs).toISOString());
+          url.searchParams.set('limit', '1000'); // max page size
+          if (pageToken) url.searchParams.set('page_token', pageToken);
+          const res = await fetch(url, { headers: this.headers() });
+          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+          const data = (await res.json()) as {
+            bars?: Record<string, Array<Record<string, number | string>>>;
+            next_page_token?: string | null;
+          };
+          const page = data.bars?.[symbol] ?? [];
+          all.push(...page);
+          pageToken = data.next_page_token ?? undefined;
+        } while (pageToken && ++guard < 10 && all.length < limit + 50);
+
+        if (all.length > 0) {
+          // Alpaca returns oldest-first; keep only the most recent `limit` bars.
+          const trimmed = all.slice(-limit);
+          return trimmed.map((b) => ({
             open: Number(b.o),
             high: Number(b.h),
             low: Number(b.l),
@@ -154,6 +176,7 @@ export class AlpacaClient {
             ts: new Date(String(b.t)).getTime(),
           }));
         }
+        log.warn(`[alpaca] getCryptoBars ${symbol} returned 0 bars (symbol delisted/untradeable?) — using synthetic`);
       } catch (e) {
         log.warn(`[alpaca] getCryptoBars ${symbol} failed, using synthetic: ${(e as Error).message}`);
       }
@@ -219,6 +242,8 @@ const BASE_PRICES: Record<string, number> = {
   'LINK/USD': 16,
   'DOGE/USD': 0.16,
   'MATIC/USD': 0.7,
+  'POL/USD': 0.45,
+  'UNI/USD': 9.5,
 };
 
 /** Timeframe string → milliseconds per bar. */

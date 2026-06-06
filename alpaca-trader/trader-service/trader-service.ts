@@ -3,6 +3,8 @@ import { getRecentLogs, getLogsSince, type LogEntry } from './logger.js';
 import { getRiskConfig } from './risk.js';
 import { getJournal, computeJournalReport, type JournalEntry, type JournalReport } from './trade-journal.js';
 import { backtest, walkForward, type BacktestResult } from './backtest.js';
+import { getScanStats } from './scan-stats.js';
+import { getLatestNews, getHighImpact, type NewsItem } from './news-engine.js';
 import { compareBacktest, type CompareResult } from './backtest-compare.js';
 import type { Bar } from './market-regime.js';
 import type {
@@ -56,6 +58,15 @@ export class TraderService {
     ]);
     return compareBacktest(symbol, k15, k1h, walk);
   }
+
+  /** Per-gate rejection histogram (cumulative + last scan) for the dashboard. */
+  getScanStats() { return getScanStats(); }
+
+  /** Latest crypto news items (keyword-sentiment scored). */
+  getNews(limit = 20): NewsItem[] { return getLatestNews(limit); }
+
+  /** High-impact news only. */
+  getHighImpactNews(): NewsItem[] { return getHighImpact(); }
 
   getWatchlist(): string[] { return this.bot.watchlist; }
   async getAccount(): Promise<AlpacaAccount> { return this.bot.client.getAccount(); }

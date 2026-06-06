@@ -77,6 +77,8 @@ export function run() {
     const { getLatestNews } = await import('./news-engine.js');
     res.json(getLatestNews(20));
   });
+  app.get('/api/scan-stats', (_req, res) => res.json(service.getScanStats()));
+  app.get('/api/news', (req, res) => { const limit = Number(req.query.limit) || 20; res.json(service.getNews(limit)); });
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
   const server = app.listen(port, () => { log.info(`🚀 trader-service ready on http://localhost:${port}`); });

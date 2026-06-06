@@ -19,6 +19,7 @@ import {
   registerNotify as registerBreakerNotify,
 } from './circuit-breaker.js';
 import { getMarketSentiment } from './fear-greed.js';
+import { recordGate, beginScan, endScan, gateFromReason } from './scan-stats.js';
 import { getVolatilityRegime } from './volatility-regime.js';
 import { getDailyTrend, setDailyTrendClient } from './daily-trend.js';
 import { startNewsLoop } from './news-engine.js';
@@ -27,9 +28,12 @@ import { telegramNotifyOpen, telegramNotifyClose, telegramAlert, telegramStatus 
 import type { Signal, BotHealth } from './types.js';
 
 /** Default crypto watchlist (Alpaca symbols). Override with WATCHLIST env. */
+// NOTE: MATIC/USD was delisted on Alpaca (migrated to POL). Using POL/USD avoids
+// the silent fallback to synthetic data that previously made MATIC the only
+// "active" symbol — on 100% fake bars. UNI/USD added as a liquid replacement.
 const DEFAULT_WATCHLIST = [
   'BTC/USD', 'ETH/USD', 'SOL/USD', 'LTC/USD',
-  'AVAX/USD', 'LINK/USD', 'DOGE/USD', 'MATIC/USD',
+  'AVAX/USD', 'LINK/USD', 'DOGE/USD', 'UNI/USD',
 ];
 
 const SCAN_INTERVAL_MS = Number(process.env.SCAN_INTERVAL_SEC  ?? 30) * 1000;
@@ -126,7 +130,9 @@ export class TradingBot {
     }
     const acct = await this.client.getAccount();
     this.alpacaConnected = acct.connected;
-    const baseline = acct.cash || acct.portfolioValue;
+    // FIX: for crypto accounts `cash` can be near-zero while equity holds the real
+    // value. Prefer equity → portfolioValue → cash so the baseline is correct.
+    const baseline = acct.equity || acct.portfolioValue || acct.cash;
     if (baseline > 0) { this.trader.setBalance(baseline); initBreaker(baseline); }
     this.reconnectKeyId = keyId;
     this.reconnectSecret = secret;
@@ -178,8 +184,9 @@ export class TradingBot {
     this.lastScanAt = Date.now();
     this.scanCount++;
 
+    beginScan();
     // ── Heartbeat — always visible in dashboard console ─────────────────────────────
-    log.info(`[scan] #${this.scanCount} START — ${this.watchlist.length} symbols | equity $${this.trader.getBalance().toFixed(0)} | open=${this.trader.getOpenPositions().length}`);
+    log.info(`[scan] #${this.scanCount} START — ${this.watchlist.length} symbols | equity ${this.trader.getBalance().toFixed(0)} | open=${this.trader.getOpenPositions().length}`);
 
     // ── Gate 1: Session Filter ───────────────────────────────────────────────
     const session = checkSession();
@@ -238,6 +245,7 @@ export class TradingBot {
 
     // Reset ONLY after full successful scan
     this.consecutiveApiErrors = 0;
+    endScan();
     log.info(`[scan] #${this.scanCount} DONE — ${opened > 0 ? `✅ ${opened} opened` : 'no trades'} | ${neutralCount} neutral`);
   }
 
@@ -250,17 +258,20 @@ export class TradingBot {
     this.lastSignals.set(symbol, signal);
 
     if (signal.side === 'NEUTRAL') {
+      recordGate(gateFromReason(signal.blocked?.[0]));
       log.info(`[scan] ${symbol} NEUTRAL — ${signal.blocked?.[0] ?? 'regime/quality filter'}`);
       return 'neutral';
     }
 
     if (fgResult) {
       if (fgResult.blockLong && signal.side === 'LONG') {
+        recordGate('fearGreed');
         log.info(`[scan] ${symbol} LONG blocked — F&G=${fgResult.fearGreed?.value} Extreme Fear`);
         this.lastSignals.set(symbol, { ...signal, side: 'NEUTRAL', blocked: [fgResult.reason] });
         return 'neutral';
       }
       if (fgResult.blockShort && signal.side === 'SHORT') {
+        recordGate('fearGreed');
         log.info(`[scan] ${symbol} SHORT blocked — F&G=${fgResult.fearGreed?.value} Extreme Greed`);
         this.lastSignals.set(symbol, { ...signal, side: 'NEUTRAL', blocked: [fgResult.reason] });
         return 'neutral';
@@ -281,6 +292,7 @@ export class TradingBot {
     // ── SL cooldown guard ─────────────────────────────────────────────────────
     const slCooldownUntil = this.slCooldowns.get(symbol) ?? 0;
     if (Date.now() < slCooldownUntil) {
+      recordGate('slCooldown');
       const minsLeft = Math.ceil((slCooldownUntil - Date.now()) / 60_000);
       log.info(`[scan] ${symbol} SL cooldown — ${minsLeft}m left, skip re-entry`);
       return 'neutral';
@@ -289,6 +301,7 @@ export class TradingBot {
     // ── Signal dedup guard — prevent revenge trading ──────────────────────────
     const lastOpen = this.lastOpenedAt.get(symbol);
     if (lastOpen && lastOpen.side === signal.side && Date.now() - lastOpen.ts < this.SIGNAL_DEDUP_MS) {
+      recordGate('signalDedup');
       const minsLeft = Math.ceil((this.SIGNAL_DEDUP_MS - (Date.now() - lastOpen.ts)) / 60_000);
       log.info(`[scan] ${symbol} ${signal.side} dedup — same side opened ${minsLeft}m ago, cooling`);
       return 'neutral';
@@ -297,6 +310,7 @@ export class TradingBot {
     // ── Open position ───────────────────────────────────────────────────────────────
     const pos = await this.trader.openFromSignal(signal, finalMult);
     if (pos) {
+      recordGate('opened');
       this.lastOpenedAt.set(symbol, { side: signal.side, ts: Date.now() });
       log.info(`[scan] ✅ ${symbol} ${signal.side} OPENED conf=${signal.confidence}% notional=$${pos.notional.toFixed(2)} SL=${pos.stopLoss.toFixed(4)} TP=${pos.takeProfit.toFixed(4)}`);
       await Promise.allSettled([
@@ -314,6 +328,7 @@ export class TradingBot {
       ]);
       return 'opened';
     }
+    recordGate('riskCap');
     log.warn(`[scan] ${symbol} ${signal.side} signal OK but openFromSignal rejected (paused or risk cap)`);
     return 'neutral';
   }

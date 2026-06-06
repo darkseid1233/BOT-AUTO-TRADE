@@ -92,6 +92,37 @@ api.post('/risk', (req, res) => {
   try { res.json(service.updateRisk(req.body ?? {})); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ── Analytics / journal / breaker / backtest — kept in sync with the Bit app-root
+api.get('/journal', (req, res) => {
+  const limit = Number(req.query.limit) || 100;
+  res.json(service.getJournal(limit));
+});
+api.get('/journal/report', (_req, res) => res.json(service.getJournalReport()));
+api.get('/breaker', (_req, res) => res.json(service.getBreakerStatus()));
+api.post('/breaker/resume', async (_req, res) => {
+  try { res.json(await service.resumeBreaker()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+api.get('/backtest/compare/:symbol', async (req, res) => {
+  try {
+    const symbol = decodeURIComponent(req.params.symbol).toUpperCase();
+    const walk = req.query.walk !== 'false';
+    res.json(await service.runCompare(symbol, walk));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+api.get('/backtest/:symbol', async (req, res) => {
+  try {
+    const symbol = decodeURIComponent(req.params.symbol).toUpperCase();
+    const walk = req.query.walk === 'true';
+    res.json(await service.runBacktest(symbol, walk));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+api.get('/news', (req, res) => {
+  const limit = Number(req.query.limit) || 20;
+  res.json(service.getNews(limit));
+});
+api.get('/scan-stats', (_req, res) => res.json(service.getScanStats()));
 api.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use('/trader-service/api', api);

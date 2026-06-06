@@ -145,7 +145,9 @@ export const COIN_TUNING: Record<string, CoinTuning> = {
   'LTC/USD':   { note: 'standard params' },
   'AVAX/USD':  { sizeMultiplier: 0.8, note: 'L1 moderate vol' },
   'DOGE/USD':  { sizeMultiplier: 0.5, minSignalQuality: 75, note: 'meme — half size' },
-  'MATIC/USD': { sizeMultiplier: 0.8, note: 'L2 moderate vol' },
+  'POL/USD':   { sizeMultiplier: 0.8, note: 'ex-MATIC, moderate vol' },
+  'UNI/USD':   { sizeMultiplier: 0.8, note: 'DeFi blue chip, moderate vol' },
+  'MATIC/USD': { skip: true, note: 'DELISTED on Alpaca — migrated to POL' },
 };
 
 /** Effective tuning for a symbol (empty object if none). */

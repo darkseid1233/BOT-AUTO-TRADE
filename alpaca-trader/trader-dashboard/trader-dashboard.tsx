@@ -8,6 +8,7 @@ import { HistoryTable } from './history-table.js';
 import { SignalGrid } from './signal-grid.js';
 import { LogViewer } from './log-viewer.js';
 import { AnalyticsPanel } from './analytics-panel.js';
+import { ScanFunnel } from './scan-funnel.js';
 import { ConnectModal } from './connect-modal.js';
 import { RiskPanel } from './risk-panel.js';
 import { fmtTime, fmtMoney, fmtAgo } from './format.js';
@@ -17,7 +18,7 @@ type Tab = 'overview' | 'signals' | 'positions' | 'history' | 'analytics' | 'ris
 
 function AlpacaBot() {
   const {
-    stats, positions, history, signals, account, equity, health, logs, risk, breaker,
+    stats, positions, history, signals, account, equity, health, logs, risk, breaker, scanStats,
     loading, error, lastUpdated, refresh,
   } = useBotApi(5000);
   const [tab, setTab] = useState<Tab>('overview');
@@ -229,7 +230,8 @@ function AlpacaBot() {
                 <StatCard label="Avg Win" value={fmtMoney(stats.avgWin)} tone="pos" />
                 <StatCard label="Avg Loss" value={fmtMoney(-Math.abs(stats.avgLoss))} tone="neg" />
                 <StatCard label="Expectancy" value={fmtMoney(stats.expectancy)} tone={stats.expectancy >= 0 ? 'pos' : 'neg'} sub="per trade" />
-                <StatCard label="Available" value={`$${stats.availableUSDT.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
+                <StatCard label="Available" value={`${stats.availableUSDT.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
+                <StatCard label="Fees + Slippage" value={fmtMoney(-Math.abs(stats.totalCosts ?? 0))} tone="neg" sub="real cost paid" />
               </div>
             )}
 
@@ -289,7 +291,8 @@ function AlpacaBot() {
               <span className={styles.cardTitle}>📈 Performance Analytics</span>
               <span className={styles.cardBadge}>trade journal · by regime / quality / factor</span>
             </div>
-            <div style={{ padding: '16px 18px' }}>
+            <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 24 }}>
+              <ScanFunnel scanStats={scanStats} />
               <AnalyticsPanel />
             </div>
           </div>

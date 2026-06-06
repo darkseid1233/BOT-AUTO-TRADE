@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
   BotStats, OpenPosition, ClosedTrade, Signal, AlpacaAccount, EquityPoint, BotHealth, LogEntry,
-  RiskSettings, ConnectionStatus, JournalEntry, JournalReport, BreakerStatus,
+  RiskSettings, ConnectionStatus, JournalEntry, JournalReport, BreakerStatus, ScanStats,
 } from './types.js';
 
 const BASE = '/trader-service';
@@ -56,6 +56,7 @@ export type BotData = {
   logs: LogEntry[];
   risk: RiskSettings | null;
   breaker: BreakerStatus | null;
+  scanStats: ScanStats | null;
   loading: boolean;
   error: string | null;
   lastUpdated: number;
@@ -73,6 +74,7 @@ export function useBotApi(pollMs = 5000): BotData {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [risk, setRisk] = useState<RiskSettings | null>(null);
   const [breaker, setBreaker] = useState<BreakerStatus | null>(null);
+  const [scanStats, setScanStats] = useState<ScanStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState(0);
@@ -80,7 +82,7 @@ export function useBotApi(pollMs = 5000): BotData {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [s, p, h, sig, acc, eq, hl, rk, br] = await Promise.allSettled([
+      const [s, p, h, sig, acc, eq, hl, rk, br, ss] = await Promise.allSettled([
         getJson<BotStats>('/api/status'),
         getJson<OpenPosition[]>('/api/positions'),
         getJson<ClosedTrade[]>('/api/history?limit=100'),
@@ -90,6 +92,7 @@ export function useBotApi(pollMs = 5000): BotData {
         getJson<BotHealth>('/api/health/deep'),
         getJson<RiskSettings>('/api/risk'),
         getJson<BreakerStatus>('/api/breaker'),
+        getJson<ScanStats>('/api/scan-stats'),
       ]);
       if (s.status === 'fulfilled') setStats(s.value);
       if (p.status === 'fulfilled') setPositions(Array.isArray(p.value) ? p.value : []);
@@ -100,6 +103,7 @@ export function useBotApi(pollMs = 5000): BotData {
       if (hl.status === 'fulfilled') setHealth(hl.value);
       if (rk.status === 'fulfilled') setRisk(rk.value);
       if (br.status === 'fulfilled') setBreaker(br.value);
+      if (ss.status === 'fulfilled') setScanStats(ss.value);
       const anyOk = [s, p, h, sig, acc, eq, hl].some((r) => r.status === 'fulfilled');
       setError(anyOk ? null : 'Cannot reach the trading bot service.');
       setLastUpdated(Date.now());
@@ -132,7 +136,7 @@ export function useBotApi(pollMs = 5000): BotData {
   }, [fetchAll, fetchLogs, pollMs]);
 
   return {
-    stats, positions, history, signals, account, equity, health, logs, risk, breaker,
+    stats, positions, history, signals, account, equity, health, logs, risk, breaker, scanStats,
     loading, error, lastUpdated, refresh: fetchAll,
   };
 }

@@ -1,0 +1,35 @@
+/* Scan Funnel — visualises WHERE signals get rejected each scan. */
+
+.root { display: flex; flex-direction: column; gap: 20px; }
+
+.head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.title { font-size: 14px; font-weight: 800; letter-spacing: -0.2px; }
+.subtitle { font-size: 12px; color: var(--muted, #717795); }
+
+.toggle { display: flex; gap: 4px; background: var(--surface2, #171c30); border: 1px solid var(--border, #232844); border-radius: 8px; padding: 3px; }
+.toggleBtn { background: transparent; border: none; color: var(--muted, #717795); font-size: 11px; font-weight: 700; padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.toggleActive { background: var(--accent, #f5d020); color: #11131f; }
+
+.bars { display: flex; flex-direction: column; gap: 9px; }
+.row { display: grid; grid-template-columns: 150px 1fr 48px; align-items: center; gap: 12px; }
+.label { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barWrap { height: 18px; background: var(--surface2, #171c30); border: 1px solid var(--border, #232844); border-radius: 5px; overflow: hidden; }
+.bar { height: 100%; border-radius: 4px; transition: width 0.5s ease; min-width: 2px; }
+.count { font-size: 13px; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
+
+.opened { background: linear-gradient(90deg, #16d39a, #0fae7e); }
+.reject { background: linear-gradient(90deg, #3a4170, #2a2f52); }
+.blocker { background: linear-gradient(90deg, #ff5470, #d8324f); }
+
+.openedRow .label { color: var(--win, #16d39a); }
+.openedRow .count { color: var(--win, #16d39a); }
+
+.diagnosis { background: var(--surface2, #171c30); border: 1px solid var(--border, #232844); border-left: 3px solid var(--accent, #f5d020); border-radius: 8px; padding: 12px 16px; font-size: 12.5px; line-height: 1.6; }
+.diagnosis strong { color: var(--accent, #f5d020); }
+
+.empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 0; text-align: center; color: var(--muted, #717795); }
+.emptyIcon { font-size: 36px; }
+
+@media (max-width: 768px) {
+  .row { grid-template-columns: 110px 1fr 40px; }
+}

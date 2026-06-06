@@ -25,7 +25,26 @@ export type BotStats = {
   expectancy: number;
   availableUSDT: number;
   paused: boolean;
+  totalCosts?: number;
 };
+
+/** Per-gate rejection histogram surfaced by /scan-stats. */
+export type GateStats = {
+  insufficientBars: number;
+  regime: number;
+  volume: number;
+  rsiLateEntry: number;
+  btcOpposing: number;
+  quality: number;
+  riskReward: number;
+  fearGreed: number;
+  slCooldown: number;
+  signalDedup: number;
+  riskCap: number;
+  opened: number;
+};
+
+export type ScanStats = { cumulative: GateStats; lastScan: GateStats };
 
 export type OpenPosition = {
   id: string;
