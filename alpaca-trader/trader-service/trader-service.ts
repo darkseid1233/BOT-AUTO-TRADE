@@ -5,6 +5,7 @@ import { getJournal, computeJournalReport, type JournalEntry, type JournalReport
 import { backtest, walkForward, type BacktestResult } from './backtest.js';
 import { getScanStats } from './scan-stats.js';
 import { getLatestNews, getHighImpact, type NewsItem } from './news-engine.js';
+import { computePerformance, type PerformanceReport } from './performance-metrics.js';
 import { compareBacktest, type CompareResult } from './backtest-compare.js';
 import type { Bar } from './market-regime.js';
 import type {
@@ -62,6 +63,17 @@ export class TraderService {
   /** Per-gate rejection histogram (cumulative + last scan) for the dashboard. */
   getScanStats() { return getScanStats(); }
   getPerSymbolStats() { return this.bot.trader.getPerSymbolStats(); }
+
+  /**
+   * Institutional-grade performance metrics: Sharpe, Sortino, Calmar,
+   * Profit Factor, Kelly, Expectancy, max drawdown, avg hold time, streaks.
+   * Returns null when fewer than 5 full trades exist (not yet meaningful).
+   */
+  getPerformanceMetrics(): PerformanceReport | null {
+    const history = this.bot.trader.getHistory(5000);
+    const stats = this.bot.trader.getStats();
+    return computePerformance(history, stats.startingBalance);
+  }
 
   /** Latest crypto news items (keyword-sentiment scored). */
   getNews(limit = 20): NewsItem[] { return getLatestNews(limit); }

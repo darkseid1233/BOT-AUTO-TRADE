@@ -5,11 +5,16 @@
  * quality factors, entry reasons and exit reason. Analytics break down
  * performance BY regime, BY quality bucket, and BY each scoring factor.
  *
- * Persistence: entries are written to SQLite via journal-db.ts on every close
- * and loaded back on startup — so analytics survive restarts.
+ * Persistence (two tiers):
+ *   1. MongoDB (mongo-store.ts) — when MONGO_URL is set. Survives Railway
+ *      redeploys because it lives OUTSIDE the container. Preferred.
+ *   2. SQLite (journal-db.ts) — local-file fallback when Mongo is disabled.
+ * Entries are written to whichever tier is active on every close and loaded
+ * back on startup, so analytics survive restarts.
  */
 
 import { initDb, dbInsert, dbLoadAll } from './journal-db.js';
+import { mongoEnabled, initMongo, mongoInsertJournal, mongoLoadJournal } from './mongo-store.js';
 import { log } from './logger.js';
 
 export type JournalEntry = {
@@ -53,15 +58,26 @@ export type JournalReport = {
 const MAX_ENTRIES = 2000;
 const entries: JournalEntry[] = [];
 
-(function bootstrap() {
+/** True once MongoDB is connected — routes persistence to Mongo instead of SQLite. */
+let usingMongo = false;
+
+(async function bootstrap() {
   try {
+    if (mongoEnabled()) {
+      usingMongo = await initMongo();
+      if (usingMongo) {
+        const saved = await mongoLoadJournal();
+        entries.push(...saved);
+        if (saved.length > 0) log.info(`[journal] loaded ${saved.length} trades from MongoDB`);
+        return;
+      }
+    }
+    // Fallback: SQLite local file.
     const dbReady = initDb();
     if (dbReady) {
       const saved = dbLoadAll();
       entries.push(...saved);
-      if (saved.length > 0) {
-        log.info(`[journal] loaded ${saved.length} trades from SQLite`);
-      }
+      if (saved.length > 0) log.info(`[journal] loaded ${saved.length} trades from SQLite`);
     }
   } catch { /* silent */ }
 })();
@@ -69,7 +85,11 @@ const entries: JournalEntry[] = [];
 export function recordTrade(entry: JournalEntry): void {
   entries.push(entry);
   if (entries.length > MAX_ENTRIES) entries.shift();
-  dbInsert(entry);
+  if (usingMongo) {
+    mongoInsertJournal(entry).catch(() => { /* logged inside */ });
+  } else {
+    dbInsert(entry);
+  }
 }
 
 export function getJournal(limit = 100): JournalEntry[] {

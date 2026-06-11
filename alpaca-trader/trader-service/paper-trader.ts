@@ -2,6 +2,12 @@ import { log } from './logger.js';
 import { getRiskConfig } from './risk.js';
 import { applySizeMultiplier, getStrategyConfig } from './strategy-config.js';
 import { recordTrade } from './trade-journal.js';
+import {
+  mongoEnabled, initMongo, mongoLoadState, mongoSaveState, type BotStateSnapshot,
+} from './mongo-store.js';
+import { correlationCheck } from './correlation-filter.js';
+import { equityCurveFilter } from './equity-curve-filter.js';
+import { kellyRiskPct, computePerformance } from './performance-metrics.js';
 import type { AlpacaClient } from './alpaca-client.js';
 import type { Signal, OpenPosition, ClosedTrade, BotStats, EquityPoint } from './types.js';
 
@@ -34,10 +40,19 @@ export class PaperTrader {
   private pausedReason = '';
   private idSeq = 1;
   private dayStartEquity: number;
+  /** UTC day-of-month the dayStartEquity baseline belongs to (for daily rollover). */
+  private dayStartDay: number;
   private peakEquity: number;
   private risk = getRiskConfig();
   /** Total fees + slippage paid across all closes (for transparency in stats). */
   private totalCosts = 0;
+  /**
+   * Rolling window of recent trade outcomes (true = win). Drives ADAPTIVE
+   * position sizing à la Freqtrade: shrink size during losing streaks, restore
+   * it as wins return — a simple, robust alternative to full Kelly that protects
+   * capital when the strategy is out of sync with the market.
+   */
+  private recentOutcomes: boolean[] = [];
 
   /**
    * Apply slippage to a fill price so paper execution matches reality.
@@ -61,8 +76,51 @@ export class PaperTrader {
     return Math.abs(notional) * getStrategyConfig().takerFeePct;
   }
 
+  /**
+   * Adaptive risk multiplier from the recent win/loss window (Freqtrade-style).
+   * 3+ losses in the last 5 → 0.5×, 2 losses → 0.75×, otherwise 1.0×. Disabled
+   * when ADAPTIVE_SIZING=false.
+   * @returns a multiplier in [0.5, 1.0] applied on top of all other sizing
+   */
+  private adaptiveRiskMultiplier(): number {
+    if (process.env.ADAPTIVE_SIZING === 'false') return 1.0;
+    const window = this.recentOutcomes.slice(-5);
+    if (window.length < 3) return 1.0;
+    const losses = window.filter((w) => !w).length;
+    if (losses >= 3) return 0.5;
+    if (losses === 2) return 0.75;
+    return 1.0;
+  }
+
+  /**
+   * Record a closed-trade outcome into the adaptive-sizing window.
+   * @param win true when the trade closed in profit
+   */
+  recordOutcome(win: boolean): void {
+    this.recentOutcomes.push(win);
+    if (this.recentOutcomes.length > 20) this.recentOutcomes.shift();
+  }
+
+  /**
+   * Roll the daily-loss baseline over at UTC midnight so the daily stop measures
+   * TODAY's drawdown, not cumulative drift since startup. Without this the
+   * dayStartEquity stayed frozen at the startup value and the daily stop became
+   * meaningless after day one.
+   */
+  private maybeRollDailyBaseline(): void {
+    const today = new Date().getUTCDate();
+    if (today !== this.dayStartDay) {
+      this.dayStartEquity = this.getEquity();
+      this.dayStartDay = today;
+      // A fresh day clears a daily-loss pause (drawdown pause persists separately).
+      if (this.paused && this.pausedReason.includes('daily loss')) this.resume();
+      log.info(`[trader] new UTC day — daily baseline reset to ${this.dayStartEquity.toFixed(2)}`);
+    }
+  }
+
   constructor(private client: AlpacaClient, startingBalance = DEFAULT_BALANCE) {
     this.startingBalance = startingBalance;
+    this.dayStartDay = new Date().getUTCDate();
     this.balance = startingBalance;
     this.dayStartEquity = startingBalance;
     this.peakEquity = startingBalance;
@@ -83,14 +141,69 @@ export class PaperTrader {
     log.info(`[trader] balance baseline set to $${balance.toLocaleString()}`);
   }
 
-  pause(reason = 'manual'): void { this.paused = true; this.pausedReason = reason; }
-  resume(): void { this.paused = false; this.pausedReason = ''; }
+  pause(reason = 'manual'): void { this.paused = true; this.pausedReason = reason; this.persistState(); }
+  resume(): void { this.paused = false; this.pausedReason = ''; this.persistState(); }
   isPaused(): boolean { return this.paused; }
   getPausedReason(): string { return this.pausedReason; }
   getOpenPositions(): OpenPosition[] { return Array.from(this.positions.values()); }
   getHistory(limit = 100): ClosedTrade[] { return this.history.slice(-limit).reverse(); }
   getEquityCurve(): EquityPoint[] { return this.equityCurve.slice(-500); }
   getBalance(): number { return this.balance; }
+
+  /**
+   * Restore the trader's live state from a MongoDB snapshot on startup, so the
+   * balance, peak equity, open positions and equity curve survive a redeploy.
+   * Only runs when MONGO_URL is set and a snapshot exists. Skipped when an
+   * Alpaca account is connected (the live account is the source of truth then).
+   * @returns true when state was restored
+   */
+  async restoreFromMongo(): Promise<boolean> {
+    if (!mongoEnabled()) return false;
+    const ok = await initMongo();
+    if (!ok) return false;
+    const snap = await mongoLoadState();
+    if (!snap) return false;
+    this.balance = snap.balance;
+    this.startingBalance = snap.startingBalance;
+    this.peakEquity = snap.peakEquity;
+    this.dayStartEquity = snap.dayStartEquity;
+    this.dayStartDay = snap.dayStartDay ?? new Date().getUTCDate();
+    this.paused = snap.paused;
+    this.pausedReason = snap.pausedReason;
+    this.idSeq = snap.idSeq;
+    this.totalCosts = snap.totalCosts ?? 0;
+    this.recentOutcomes = snap.recentOutcomes ?? [];
+    this.positions = new Map((snap.positions as OpenPosition[]).map((p) => [p.symbol, p]));
+    this.history = snap.history as ClosedTrade[];
+    this.equityCurve = (snap.equityCurve as EquityPoint[]) ?? [{ ts: Date.now(), balance: this.balance }];
+    log.info(`[trader] restored from MongoDB — balance ${this.balance.toFixed(2)}, ${this.positions.size} open, ${this.history.length} closed`);
+    return true;
+  }
+
+  /**
+   * Persist the current live state to MongoDB. Fire-and-forget; safe no-op when
+   * Mongo is disabled. Called after every state change (open/close/pause).
+   */
+  private persistState(): void {
+    if (!mongoEnabled()) return;
+    const snap: BotStateSnapshot = {
+      balance: this.balance,
+      startingBalance: this.startingBalance,
+      peakEquity: this.peakEquity,
+      dayStartEquity: this.dayStartEquity,
+      dayStartDay: this.dayStartDay,
+      paused: this.paused,
+      pausedReason: this.pausedReason,
+      idSeq: this.idSeq,
+      totalCosts: this.totalCosts,
+      recentOutcomes: this.recentOutcomes,
+      positions: Array.from(this.positions.values()),
+      history: this.history.slice(-500),
+      equityCurve: this.equityCurve.slice(-500),
+      updatedAt: Date.now(),
+    };
+    mongoSaveState(snap).catch(() => { /* logged inside */ });
+  }
 
   private totalExposure(): number {
     let sum = 0;
@@ -135,18 +248,41 @@ export class PaperTrader {
     }
 
     const equity = this.getEquity();
-    const riskAmount = equity * r.riskPerTradePct;
+
+    // ── Kelly Criterion risk sizing (replaces fixed riskPerTradePct) ─────────────
+    // When >= 20 trades of history exist, use half-Kelly to dynamically size
+    // based on actual win rate and avg win/loss ratio. Falls back to config %
+    // for the first 20 trades (like Jesse trader's approach).
+    const kellyPct = kellyRiskPct(this.history, r.riskPerTradePct);
+    const riskAmount = equity * kellyPct;
+    if (kellyPct !== r.riskPerTradePct && this.history.length >= 20) {
+      log.info(`[risk] ${signal.symbol} Kelly sizing: ${(kellyPct * 100).toFixed(2)}% (fixed was ${(r.riskPerTradePct * 100).toFixed(2)}%)`);
+    }
+
     const slDist = Math.abs(signal.entry - signal.stopLoss);
 
     // Hard guard: SL distance must be at least 0.1% of price to prevent absurd qty
-    // (raised from 0.05% — 0.05% on MATIC $0.65 = $0.000325 → qty blows up to 30k+)
     const minSlDist = signal.entry * 0.001;
     if (slDist <= 0 || slDist < minSlDist) {
-      log.warn(`[risk] ${signal.symbol} rejected — SL distance ${slDist.toFixed(6)} too small (min ${minSlDist.toFixed(6)}, needs 0.1% of price). Signal SL likely miscalculated.`);
+      log.warn(`[risk] ${signal.symbol} rejected — SL distance ${slDist.toFixed(6)} too small (min ${minSlDist.toFixed(6)}).`);
       return null;
     }
 
-    let qty = (riskAmount * Math.max(0.1, Math.min(1, riskMultiplier))) / slDist;
+    // ── Compound ALL multipliers ──────────────────────────────────────────────────
+    // breaker/F&G mult × adaptive (streak) × ECF (equity curve) × correlation
+    const adaptiveMult = this.adaptiveRiskMultiplier();
+    const effectiveMult =
+      Math.max(0.1, Math.min(1, riskMultiplier)) *
+      adaptiveMult *
+      ecfMult *
+      corrMult;
+    if (effectiveMult < 1) {
+      log.info(
+        `[risk] ${signal.symbol} combined mult ×${effectiveMult.toFixed(2)} ` +
+        `(streak×${adaptiveMult} ecf×${ecfMult} corr×${corrMult} breaker×${riskMultiplier.toFixed(2)})`,
+      );
+    }
+    let qty = (riskAmount * effectiveMult) / slDist;
     qty = applySizeMultiplier(qty, signal.symbol);
 
     // Hard cap: single position can never exceed maxNotionalPct of equity
@@ -242,6 +378,7 @@ export class PaperTrader {
       `qty=${qty.toFixed(4)} notional=${notional.toFixed(2)} risk=${maxLoss.toFixed(2)} (${(r.riskPerTradePct * 100).toFixed(1)}%) ` +
       `slDist=${slDist.toFixed(6)} conf=${pos.confidence} atr=${atrValue.toFixed(4)}`,
     );
+    this.persistState();
     return pos;
   }
 
@@ -254,6 +391,8 @@ export class PaperTrader {
   async tick(priceFor: (symbol: string) => Promise<number>): Promise<ClosedTrade[]> {
     const cfg = getStrategyConfig();
     const closed: ClosedTrade[] = [];
+    // Roll the daily-loss baseline at UTC midnight so the daily stop stays meaningful.
+    this.maybeRollDailyBaseline();
 
     for (const pos of this.positions.values()) {
       let price = pos.markPrice;
@@ -456,6 +595,8 @@ export class PaperTrader {
     };
     this.history.push(trade);
     this.positions.delete(pos.symbol);
+    // Feed the adaptive-sizing window (partial-only closes don't reach here).
+    this.recordOutcome(realizedPnl > 0);
 
     recordTrade({
       id: trade.id, symbol: trade.symbol, side: trade.side,
@@ -472,6 +613,7 @@ export class PaperTrader {
 
     const emoji = realizedPnl >= 0 ? '✅' : '❌';
     log.info(`${emoji} CLOSE ${reason} ${pos.symbol} @ ${price.toFixed(2)} PnL=${realizedPnl.toFixed(2)} (${pos.l1Hit ? 'L1' : ''}${pos.l2Hit ? '+L2' : ''} hit, trailing=${pos.trailingActive})`);
+    this.persistState();
     return trade;
   }
 

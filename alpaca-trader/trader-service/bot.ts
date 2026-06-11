@@ -90,6 +90,12 @@ export class TradingBot {
     });
     const acct = await this.client.getAccount();
     this.alpacaConnected = acct.connected;
+    // Restore persisted state from MongoDB (survives Railway redeploys). Only
+    // meaningful in DEMO mode — when a live Alpaca account is connected, the
+    // account itself is the source of truth for balance.
+    if (!acct.connected) {
+      await this.trader.restoreFromMongo().catch((e) => log.warn(`[mongo] restore: ${(e as Error).message}`));
+    }
     const startingBalance = acct.connected ? (acct.equity || acct.portfolioValue || acct.cash) : this.trader.getBalance();
     // Sync the paper trader's balance to the REAL account when connected via env
     // credentials. Without this the trader kept the 100000 demo balance while the

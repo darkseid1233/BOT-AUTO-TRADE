@@ -99,6 +99,11 @@ api.get('/journal', (req, res) => {
   res.json(service.getJournal(limit));
 });
 api.get('/journal/report', (_req, res) => res.json(service.getJournalReport()));
+api.get('/performance', (_req, res) => {
+  const metrics = service.getPerformanceMetrics();
+  if (!metrics) { res.json({ error: 'Insufficient trade history (min 5 trades)' }); return; }
+  res.json(metrics);
+});
 api.get('/breaker', (_req, res) => res.json(service.getBreakerStatus()));
 api.post('/breaker/resume', async (_req, res) => {
   try { res.json(await service.resumeBreaker()); }
