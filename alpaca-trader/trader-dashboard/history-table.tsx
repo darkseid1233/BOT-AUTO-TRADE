@@ -6,6 +6,7 @@ import styles from './trader-dashboard.module.css';
 const REASON_COLORS: Record<string, string> = {
   TP: '#16d39a', TP_PARTIAL_L1: '#5b7fff', TP_PARTIAL_L2: '#3a5ad9',
   SL: '#ff5470', TRAILING: '#ffa733', MANUAL: '#717795', PANIC: '#ff0055',
+  TIME: '#9b8cff',
 };
 
 /**

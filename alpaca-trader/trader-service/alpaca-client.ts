@@ -18,9 +18,34 @@ export class AlpacaClient {
   private tradingBase = process.env.ALPACA_BASE_URL ?? 'https://paper-api.alpaca.markets';
   private dataBase = process.env.ALPACA_DATA_URL ?? 'https://data.alpaca.markets';
 
+  /**
+   * Symbols whose most recent getCryptoBars call fell back to SYNTHETIC data.
+   * Inspired by Freqtrade's data-quality gate: the strategy layer must be able to
+   * tell real bars from generated ones so it never opens a live trade on fake
+   * prices. The bot checks this via {@link isDataSynthetic} before entering.
+   */
+  private syntheticSymbols = new Set<string>();
+
+  /**
+   * Short-TTL OHLCV cache (like Freqtrade's DataProvider cache). A single scan
+   * fetches the same symbol several times (signal + HTF + BTC-state + tick).
+   * Caching for a fraction of the bar interval removes redundant HTTP calls and
+   * the rate-limit pressure that caused intermittent failures.
+   */
+  private barCache = new Map<string, { fetchedAt: number; bars: { open: number; high: number; low: number; close: number; volume: number; ts: number }[] }>();
+
   /** True when real Alpaca credentials are configured. */
   get hasCredentials(): boolean {
     return Boolean(this.keyId && this.secret);
+  }
+
+  /**
+   * Whether the last bars returned for a symbol were SYNTHETIC (demo/fallback).
+   * @param symbol crypto symbol
+   * @returns true when the latest data for this symbol was generated, not real
+   */
+  isDataSynthetic(symbol: string): boolean {
+    return this.syntheticSymbols.has(symbol);
   }
 
   /** @returns whether the trading base URL points at the paper endpoint. */
@@ -156,54 +181,89 @@ export class AlpacaClient {
     timeframe = '15Min',
     limit = 120,
   ): Promise<{ open: number; high: number; low: number; close: number; volume: number; ts: number }[]> {
-    if (this.hasCredentials) {
-      try {
-        // CRITICAL FIX: Alpaca's crypto bars endpoint returns far fewer than `limit`
-        // bars when no `start` is supplied — which made every real symbol fail the
-        // "Insufficient bars" gate (>=205 bars required). We now request an explicit
-        // time window wide enough to cover `limit` bars (with a generous buffer for
-        // gaps/maintenance) and paginate with `next_page_token` until we have enough.
-        const barMs = timeframeMs(timeframe);
-        const startMs = Date.now() - Math.ceil(limit * 1.5) * barMs;
-        const all: Array<Record<string, number | string>> = [];
-        let pageToken: string | undefined;
-        let guard = 0;
-        do {
-          const url = new URL(`${this.dataBase}/v1beta3/crypto/us/bars`);
-          url.searchParams.set('symbols', symbol);
-          url.searchParams.set('timeframe', timeframe);
-          url.searchParams.set('start', new Date(startMs).toISOString());
-          url.searchParams.set('limit', '1000'); // max page size
-          if (pageToken) url.searchParams.set('page_token', pageToken);
-          const res = await fetch(url, { headers: this.headers() });
-          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-          const data = (await res.json()) as {
-            bars?: Record<string, Array<Record<string, number | string>>>;
-            next_page_token?: string | null;
-          };
-          const page = data.bars?.[symbol] ?? [];
-          all.push(...page);
-          pageToken = data.next_page_token ?? undefined;
-        } while (pageToken && ++guard < 10 && all.length < limit + 50);
+    // IMPORTANT: Alpaca's crypto market-data endpoint (v1beta3/crypto/us/bars) is
+    // PUBLIC — it returns real OHLCV without authentication. The previous version
+    // only fetched real data when credentials were present AND always sent auth
+    // headers, which produced a 401 on every call (trading-only keys / no data
+    // plan) → silent fallback to SYNTHETIC random-walk prices for EVERY symbol.
+    // The bot was effectively trading on fake data.
+    //
+    // Fix: always try the public endpoint. Send auth headers when available, but
+    // on 401/403 retry once WITHOUT headers (public access) before giving up.
 
-        if (all.length > 0) {
-          // Alpaca returns oldest-first; keep only the most recent `limit` bars.
-          const trimmed = all.slice(-limit);
-          return trimmed.map((b) => ({
-            open: Number(b.o),
-            high: Number(b.h),
-            low: Number(b.l),
-            close: Number(b.c),
-            volume: Number(b.v),
-            ts: new Date(String(b.t)).getTime(),
-          }));
-        }
-        log.warn(`[alpaca] getCryptoBars ${symbol} returned 0 bars (symbol delisted/untradeable?) — using synthetic`);
-      } catch (e) {
-        log.warn(`[alpaca] getCryptoBars ${symbol} failed, using synthetic: ${(e as Error).message}`);
-      }
+    // ── Cache hit (Freqtrade-style): serve recent bars without a new request ──
+    const cacheKey = `${symbol}|${timeframe}|${limit}`;
+    const cached = this.barCache.get(cacheKey);
+    const cacheTtl = Math.min(timeframeMs(timeframe) / 3, 60_000); // ≤ 1/3 bar, max 60s
+    if (cached && Date.now() - cached.fetchedAt < cacheTtl) {
+      return cached.bars;
     }
+    try {
+      // CRITICAL: request an explicit time window wide enough to cover `limit`
+      // bars (buffer for gaps/maintenance) and paginate with next_page_token.
+      const barMs = timeframeMs(timeframe);
+      const startMs = Date.now() - Math.ceil(limit * 1.5) * barMs;
+      const all: Array<Record<string, number | string>> = [];
+      let pageToken: string | undefined;
+      let guard = 0;
+      do {
+        const url = new URL(`${this.dataBase}/v1beta3/crypto/us/bars`);
+        url.searchParams.set('symbols', symbol);
+        url.searchParams.set('timeframe', timeframe);
+        url.searchParams.set('start', new Date(startMs).toISOString());
+        url.searchParams.set('limit', '1000'); // max page size
+        if (pageToken) url.searchParams.set('page_token', pageToken);
+        const res = await this.fetchPublicData(url);
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const data = (await res.json()) as {
+          bars?: Record<string, Array<Record<string, number | string>>>;
+          next_page_token?: string | null;
+        };
+        const page = data.bars?.[symbol] ?? [];
+        all.push(...page);
+        pageToken = data.next_page_token ?? undefined;
+      } while (pageToken && ++guard < 10 && all.length < limit + 50);
+
+      if (all.length > 0) {
+        // Alpaca returns oldest-first; keep only the most recent `limit` bars.
+        const trimmed = all.slice(-limit);
+        const bars = trimmed.map((b) => ({
+          open: Number(b.o),
+          high: Number(b.h),
+          low: Number(b.l),
+          close: Number(b.c),
+          volume: Number(b.v),
+          ts: new Date(String(b.t)).getTime(),
+        }));
+        // Real data: clear any synthetic flag and cache it.
+        this.syntheticSymbols.delete(symbol);
+        this.barCache.set(cacheKey, { fetchedAt: Date.now(), bars });
+        return bars;
+      }
+      log.warn(`[alpaca] getCryptoBars ${symbol} returned 0 bars (symbol delisted/untradeable?) — using synthetic`);
+    } catch (e) {
+      log.warn(`[alpaca] getCryptoBars ${symbol} failed, using synthetic: ${(e as Error).message}`);
+    }
+    // Fallback: flag the symbol so the strategy layer can refuse to trade on it.
+    this.syntheticSymbols.add(symbol);
     return syntheticBars(symbol, limit, timeframe);
+  }
+
+  /**
+   * Fetch from the PUBLIC Alpaca crypto data endpoint.
+   * Tries with auth headers first (when available); on 401/403 — which means the
+   * keys are trading-only or lack a data subscription — retries once WITHOUT
+   * headers, because the crypto bars endpoint is publicly accessible.
+   * @param url fully-built request URL
+   * @returns the fetch Response (caller checks res.ok)
+   */
+  private async fetchPublicData(url: URL): Promise<Response> {
+    if (this.hasCredentials) {
+      const res = await fetch(url, { headers: this.headers(), signal: AbortSignal.timeout(10_000) });
+      if (res.status !== 401 && res.status !== 403) return res;
+      // Auth rejected for market data — fall through to public (no-auth) request.
+    }
+    return fetch(url, { signal: AbortSignal.timeout(10_000) });
   }
 
   /**

@@ -14,13 +14,14 @@ const GATE_LABELS: Record<keyof GateStats, string> = {
   fearGreed: 'Fear & Greed block',
   slCooldown: 'SL cooldown',
   signalDedup: 'Dedup (anti-revenge)',
+  dataQuality: 'Synthetic data block',
   riskCap: 'Risk cap',
   opened: 'Opened ✅',
 };
 
 const ORDER: (keyof GateStats)[] = [
   'opened', 'insufficientBars', 'regime', 'volume', 'rsiLateEntry', 'btcOpposing',
-  'quality', 'riskReward', 'fearGreed', 'slCooldown', 'signalDedup', 'riskCap',
+  'quality', 'riskReward', 'fearGreed', 'slCooldown', 'signalDedup', 'dataQuality', 'riskCap',
 ];
 
 /**

@@ -90,7 +90,11 @@ export class TradingBot {
     });
     const acct = await this.client.getAccount();
     this.alpacaConnected = acct.connected;
-    const startingBalance = acct.connected ? (acct.equity || acct.cash) : this.trader.getBalance();
+    const startingBalance = acct.connected ? (acct.equity || acct.portfolioValue || acct.cash) : this.trader.getBalance();
+    // Sync the paper trader's balance to the REAL account when connected via env
+    // credentials. Without this the trader kept the 100000 demo balance while the
+    // breaker used the real one — a mismatch that distorted sizing and drawdown.
+    if (acct.connected && startingBalance > 0) this.trader.setBalance(startingBalance);
     initBreaker(startingBalance);
     log.info(
       `[bot] v2 starting — Alpaca ${acct.connected ? 'CONNECTED' : 'DEMO'} | ` +
@@ -262,6 +266,17 @@ export class TradingBot {
   ): Promise<'opened' | 'neutral'> {
     const signal = await generateSignal(symbol, this.client, btcState);
     this.lastSignals.set(symbol, signal);
+
+    // ── Data-quality gate (Freqtrade-inspired) ────────────────────────────────
+    // NEVER open a live trade on synthetic/fallback data. If the market-data
+    // fetch fell back to generated prices, the signal is meaningless for real
+    // money. Allow it through only when ALLOW_SYNTHETIC_TRADING=true (demo/testing).
+    if (this.client.isDataSynthetic(symbol) && process.env.ALLOW_SYNTHETIC_TRADING !== 'true') {
+      recordGate('dataQuality');
+      log.warn(`[scan] ${symbol} skip — SYNTHETIC data (real bars unavailable). Set ALLOW_SYNTHETIC_TRADING=true to trade demo data.`);
+      this.lastSignals.set(symbol, { ...signal, side: 'NEUTRAL', blocked: ['synthetic data'] });
+      return 'neutral';
+    }
 
     if (signal.side === 'NEUTRAL') {
       recordGate(gateFromReason(signal.blocked?.[0]));

@@ -82,6 +82,8 @@ export type StrategyConfig = {
   breakevenBufferR: number;
   /** Trailing-stop ATR multiplier (chandelier). */
   trailingAtrMult: number;
+  /** Max hours a position may stay open before a time-based exit (0 = disabled). */
+  maxHoldHours: number;
   /** Fee + slippage assumptions for net R:R and backtests. */
   takerFeePct: number;
   slippagePct: number;
@@ -119,6 +121,9 @@ export function getStrategyConfig(): StrategyConfig {
     partialTpL2ClosePct:readNumberEnv('PARTIAL_TP_L2_CLOSE', 30),
     breakevenBufferR:   readNumberEnv('BREAKEVEN_BUFFER_R', 0.2),
     trailingAtrMult:    readNumberEnv('TRAILING_ATR_MULT', 2.0),
+    // Time-based exit (Freqtrade/Hummingbot pattern): close positions that go
+    // nowhere so capital isn't locked in dead trades. 0 disables it.
+    maxHoldHours:       readNumberEnv('MAX_HOLD_HOURS', 48),
     takerFeePct:        readNumberEnv('TAKER_FEE_PCT', 0.0004),
     slippagePct:        readNumberEnv('SIMULATED_SLIPPAGE_PCT', 0.0005),
 

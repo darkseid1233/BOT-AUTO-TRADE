@@ -104,15 +104,35 @@ export class PaperTrader {
    * @param riskMultiplier size multiplier from circuit breaker / F&G (0-1)
    */
   async openFromSignal(signal: Signal, riskMultiplier = 1.0): Promise<OpenPosition | null> {
-    if (this.paused) return null;
+    // Each early-return now logs the SPECIFIC reason so the dashboard no longer
+    // shows the ambiguous "paused or risk cap" for every rejected signal.
+    if (this.paused) {
+      log.warn(`[risk] ${signal.symbol} rejected — trader PAUSED (${this.pausedReason || 'manual'}). Use Resume to re-enable trading.`);
+      return null;
+    }
     if (signal.side === 'NEUTRAL') return null;
-    if (this.positions.has(signal.symbol)) return null;
+    if (this.positions.has(signal.symbol)) {
+      log.info(`[risk] ${signal.symbol} skip — position already open`);
+      return null;
+    }
 
     const r = this.risk.get();
-    if (this.checkDailyStop(r.dailyMaxLossPct)) return null;
-    if (this.checkDrawdownStop(r.maxDrawdownStopPct)) return null;
-    if (signal.confidence < r.minConfidence) return null;
-    if (this.positions.size >= r.maxOpenTrades) return null;
+    if (this.checkDailyStop(r.dailyMaxLossPct)) {
+      log.warn(`[risk] ${signal.symbol} rejected — daily loss stop active`);
+      return null;
+    }
+    if (this.checkDrawdownStop(r.maxDrawdownStopPct)) {
+      log.warn(`[risk] ${signal.symbol} rejected — max drawdown stop active`);
+      return null;
+    }
+    if (signal.confidence < r.minConfidence) {
+      log.info(`[risk] ${signal.symbol} skip — confidence ${signal.confidence} < minConfidence ${r.minConfidence}`);
+      return null;
+    }
+    if (this.positions.size >= r.maxOpenTrades) {
+      log.info(`[risk] ${signal.symbol} skip — max open trades ${r.maxOpenTrades} reached`);
+      return null;
+    }
 
     const equity = this.getEquity();
     const riskAmount = equity * r.riskPerTradePct;
@@ -318,6 +338,11 @@ export class PaperTrader {
         closed.push(this.closeAt(pos, pos.stopLoss, reason));
       } else if (hitTp) {
         closed.push(this.closeAt(pos, pos.takeProfit, 'TP'));
+      } else if (cfg.maxHoldHours > 0 && Date.now() - pos.openedAt >= cfg.maxHoldHours * 3_600_000) {
+        // Time-based exit (Freqtrade/Hummingbot): a position that never reached
+        // SL or TP within maxHoldHours is closed at market to free up capital.
+        log.info(`⏱️ TIME EXIT ${pos.symbol} after ${cfg.maxHoldHours}h @ ${price.toFixed(2)} (pnl ${pos.pnlPercent.toFixed(2)}%)`);
+        closed.push(this.closeAt(pos, price, 'TIME'));
       }
     }
 

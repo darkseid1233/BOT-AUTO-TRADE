@@ -20,6 +20,7 @@ export type GateName =
   | 'fearGreed'
   | 'slCooldown'
   | 'signalDedup'
+  | 'dataQuality'
   | 'riskCap'
   | 'opened';
 
@@ -28,7 +29,7 @@ export type GateStats = Record<GateName, number>;
 const GATE_NAMES: GateName[] = [
   'insufficientBars', 'regime', 'volume', 'rsiLateEntry', 'btcOpposing',
   'quality', 'riskReward', 'fearGreed', 'slCooldown', 'signalDedup',
-  'riskCap', 'opened',
+  'dataQuality', 'riskCap', 'opened',
 ];
 
 function blank(): GateStats {

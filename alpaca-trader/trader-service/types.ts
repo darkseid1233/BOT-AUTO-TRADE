@@ -96,7 +96,7 @@ export type ClosedTrade = {
   qty: number;
   realizedPnl: number;
   pnlPercent: number;
-  reason: 'TP' | 'SL' | 'TRAILING' | 'TP_PARTIAL_L1' | 'TP_PARTIAL_L2' | 'MANUAL' | 'PANIC';
+  reason: 'TP' | 'SL' | 'TRAILING' | 'TP_PARTIAL_L1' | 'TP_PARTIAL_L2' | 'MANUAL' | 'PANIC' | 'TIME';
   openedAt: number;
   closedAt: number;
   context?: SignalContext;
